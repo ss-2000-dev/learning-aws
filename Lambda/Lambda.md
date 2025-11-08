@@ -44,3 +44,28 @@
 # AWS Lambda テスト
 
 # [AWS Lambda の超基本的な Tips](https://qiita.com/shibadai/items/fd483ccd2ad8c8d89c1a)
+
+# Lambda Function URL
+
+- API Gateway, ALB を利用せずにエンドポイントを作成して Lambda を呼び出せる機能
+- 関数 URL を作成
+  - 認証タイプ:
+    - AWS_IAM: 認証された IAM ユーザーとロールのみが、関数 URL にリクエストを行うことができる
+    - None: Lambda は、関数 URL へのリクエストに対して IAM 認証を実行しない。関数に独自の認可ロジックを実装しない限り、URL エンドポイントはパブリックになる
+      - 認証タイプの NONE を選択すると、Lambda によってリソースベースのポリシーが自動的に作成され、関数にアタッチされる（auth-type-none.json）
+        - 呼び出しモード: BUFFERED (デフォルト), RESPINSE_STREAM, CORS の設定
+
+# なぜ VPC Lambda はローカル環境から呼び出せるのか
+
+- Lambda の実体がユーザーの VPC 内にある訳ではなく、実体は AWS 管理の VPC 内にあり、ENI がユーザーの VPC 内にあるという仕組みの
+- AWS のドキュメントにも記載されていますが、Invoke API のエンドポイントは lambda.{リージョン}.api.aws なので、呼び出し元がここに到達できさえすれば VPC Lambda でも呼び出せる
+- 先ほど作成した VPC Lambda のセキュリティグループのインバウンドルールに許可設定を入れなくても呼び出せたことから、インバウンドルールは評価されていなさそう
+- 参考: [ローカル環境から VPC Lambda ってどうして呼び出せるんだっけ？](https://zenn.dev/simpleform_blog/articles/c5938aece1b037)
+
+### 実験
+
+VPC Lambda の実験、関数 URL で実践
+
+| サブネット | セキュリティグループインバウンドルール | セキュリティグループアウトバウンドルール | 結果                  |
+| ---------- | -------------------------------------- | ---------------------------------------- | --------------------- |
+| パブリック | HTTPS のみ許可                         | HTTPS のみ許可                           | Internal Server Error |

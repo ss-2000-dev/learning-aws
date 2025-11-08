@@ -7,8 +7,10 @@
 
 # [Amazon Athena Workshop](https://catalog.us-east-1.prod.workshops.aws/workshops/9981f1a1-abdc-49b5-8387-cb01d238bb78/en-US)
 
-- [Self Paced Labs](https://catalog.us-east-1.prod.workshops.aws/workshops/9981f1a1-abdc-49b5-8387-cb01d238bb78/en-US/20-howtostart/201-self-paced)
-- [Athena Basics](https://catalog.us-east-1.prod.workshops.aws/workshops/9981f1a1-abdc-49b5-8387-cb01d238bb78/en-US/30-basics)
+- Athena の基礎のみ実施
+- ラボを試すために必要な IAM ユーザー、Athena ワークグループ、Athena 名前付きクエリは CloudFormaion テンプレートで定義（スタック名:athena-workshop-2025-10-19）
+  ― ファイル形式が「parquet」（拡張子が parquet？）
+- https://catalog.us-east-1.prod.workshops.aws/workshops/9981f1a1-abdc-49b5-8387-cb01d238bb78/en-US/30-basics/301-create-tables ここまで
 
 # チュートリアル → 　あんまり参考にならない
 

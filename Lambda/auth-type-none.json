@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "StatementId": "FunctionURLAllowPublicAccess",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "lambda:InvokeFunctionUrl",
+      "Resource": "arn:aws:lambda:ap-northeast-1:618584750402:function:export-yt-basic-function",
+      "Condition": {
+        "StringEquals": {
+          "lambda:FunctionUrlAuthType": "NONE"
+        }
+      }
+    },
+    {
+      "StatementId": "FunctionURLAllowInvokeAction",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:ap-northeast-1:618584750402:function:export-yt-basic-function",
+      "Condition": {
+        "Bool": {
+          "lambda:InvokedViaFunctionUrl": "true"
+        }
+      }
+    }
+  ]
+}

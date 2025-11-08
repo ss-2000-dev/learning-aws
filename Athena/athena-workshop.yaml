@@ -1,0 +1,414 @@
+# Amazon Athena WorkshopのCloudFormation スタック
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  Athena Immersion Day - Creates Athena Workgroups, Named Queries, IAM Users
+Resources:
+  AthenaWorkShopBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join
+        - "-"
+        - - athena-workshop
+          - !Ref AWS::AccountId
+  workgroupA:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: workgroupA
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        PublishCloudWatchMetricsEnabled: true
+        ResultConfiguration:
+          OutputLocation: !Join
+            - ""
+            - - s3://
+              - !Ref AthenaWorkShopBucket
+              - /
+  workgroupB:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: workgroupB
+      RecursiveDeleteOption: true
+  workgroupIcebergpreview:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: AmazonAthenaIcebergPreview
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        EngineVersion:
+          SelectedEngineVersion: Athena engine version 3
+        PublishCloudWatchMetricsEnabled: true
+        ResultConfiguration:
+          OutputLocation: !Join
+            - ""
+            - - s3://
+              - !Ref AthenaWorkShopBucket
+              - /
+  basicscustomercsv:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: Create table customers_csv
+      Name: Athena_create_customers_csv
+      QueryString: !Sub |
+        CREATE EXTERNAL TABLE customers_csv (
+        card_id bigint,
+        customer_id bigint,
+        lastname string,
+        firstname string,
+        email string,
+        address string,
+        birthday string,
+        country string)
+        ROW FORMAT DELIMITED
+        FIELDS TERMINATED BY ','
+        STORED AS INPUTFORMAT
+        'org.apache.hadoop.mapred.TextInputFormat'
+        OUTPUTFORMAT
+        'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+        LOCATION
+        's3://${AthenaWorkShopBucket}/basics/csv/customers/'
+        TBLPROPERTIES (
+        'areColumnsQuoted'='false',
+        'classification'='csv',
+        'columnsOrdered'='true',
+        'compressionType'='none',
+        'delimiter'=',',
+        'skip.header.line.count'='1',
+        'typeOfData'='file');
+  basicssalescsv:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: Create table sales_csv
+      Name: Athena_create_sales_csv
+      QueryString: !Sub |
+        CREATE EXTERNAL TABLE sales_csv(
+        card_id bigint,
+        customer_id bigint,
+        price string,
+        product_id string,
+        timestamp string)
+        ROW FORMAT DELIMITED
+        FIELDS TERMINATED BY ','
+        STORED AS INPUTFORMAT
+        'org.apache.hadoop.mapred.TextInputFormat'
+        OUTPUTFORMAT
+        'org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat'
+        LOCATION
+        's3://${AthenaWorkShopBucket}/basics/csv/sales/'
+        TBLPROPERTIES (
+        'areColumnsQuoted'='false',
+        'classification'='csv',
+        'columnsOrdered'='true',
+        'compressionType'='none',
+        'delimiter'=',',
+        'skip.header.line.count'='1',
+        'typeOfData'='file');
+  basicscustomerparquet:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: Create table customers_parquet
+      Name: Athena_create_customers_parquet
+      QueryString: !Sub |
+        CREATE EXTERNAL TABLE `customers_parquet`(
+        card_id bigint,
+        customer_id bigint,
+        lastname string,
+        firstname string,
+        email string,
+        address string,
+        birthday string)
+        PARTITIONED BY (
+        `country` string)
+        ROW FORMAT SERDE
+        'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+        STORED AS INPUTFORMAT
+        'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat'
+        OUTPUTFORMAT
+        'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat'
+        LOCATION
+        's3://${AthenaWorkShopBucket}/basics/parquet/customers/'
+        TBLPROPERTIES (
+        'classification'='parquet',
+        'compressionType'='none',
+        'partition_filtering.enabled'='true',
+        'typeOfData'='file');
+
+        MSCK REPAIR TABLE customers_parquet;
+
+        SHOW PARTITIONS customers_parquet;
+  basicssalesparquet:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: Create table sales_parquet
+      Name: Athena_create_sales_parquet
+      QueryString: !Sub |
+        CREATE EXTERNAL TABLE `sales_parquet`(
+        card_id bigint,
+        customer_id bigint,
+        price double,
+        product_id string,
+        timestamp string)
+        PARTITIONED BY (
+        year string,
+        month string)
+        ROW FORMAT SERDE
+        'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+        STORED AS INPUTFORMAT
+        'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat'
+        OUTPUTFORMAT
+        'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat'
+        LOCATION
+        's3://${AthenaWorkShopBucket}/basics/parquet/sales/'
+        TBLPROPERTIES (
+        'classification'='parquet',
+        'compressionType'='none',
+        'partition_filtering.enabled'='true',
+        'typeOfData'='file');
+
+        MSCK REPAIR TABLE sales_parquet;
+
+        SHOW PARTITIONS sales_parquet;
+  qrycustomersales:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: Compare csv and parquet query times for customer sales
+      Name: Athena_compare_sales
+      QueryString: |
+        /* Lets find the top 10 products for Australia from the CSV table*/
+        select c.country, s.product_id, count(timestamp) as total_transactions
+        from customers_csv c join sales_csv s on c.customer_id = s.customer_id
+        where country ='Australia'
+        group by c.country,s.product_id
+        order by 1,3 desc
+        limit 10;
+
+        /* Lets find the top 10 products for Australia from the parquet tables*/
+        select c.country, s.product_id, count(timestamp) as total_transactions
+        from customers_parquet c join sales_parquet s on c.customer_id = s.customer_id
+        where country ='Australia'
+        group by c.country,s.product_id
+        order by 1,3 desc
+        limit 10;
+
+        /* Lets find the top 10 biggest spending customers from the sales CSV table */
+        select customer_id, sum(cast(price as decimal(6,2))) as total_sales
+        from sales_csv s
+        group by customer_id
+        order by 2 desc
+        limit 10;
+
+        /* Lets find the top 10 biggest spending customers from the sales parquet table */
+        select customer_id, sum(cast(price as decimal(6,2))) as total_sales
+        from sales_parquet s
+        group by customer_id
+        order by 2 desc
+        limit 10;
+  CustomerLifetimeValueView:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: Create View Customer_Lifetime_value
+      Name: Athena_create_customer_lifetime_value_view
+      QueryString: |
+        CREATE OR REPLACE VIEW "customer_lifetime_value" AS
+        /* Create view for customer life time value */
+
+        select c.customer_id,concat("firstname",' ',"lastname") as full_name,c.country, sum(cast(price as decimal(6,2))) as lifetime_value
+        from customers_parquet c join sales_parquet s on c.customer_id = s.customer_id
+        group by c.customer_id,concat("firstname",' ',"lastname"),c.country;
+
+        Select * from customer_lifetime_value limit 10;
+  ctasCustomerSales:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: default
+      Description: CTAS Customer Sales
+      Name: Athena_ctas_customer_sales
+      QueryString: !Sub |
+        CREATE TABLE "customer_sales_ctas" WITH (
+        format = 'parquet',
+        external_location = 's3://${AthenaWorkShopBucket}/basics/parquet/sales_ctas/',
+        partitioned_by = ARRAY [ 'year','month']
+        ) AS
+        SELECT
+          c.customer_id,
+          c.card_id,
+          c.firstname,
+          c.lastname,
+          c.email,
+          c.birthday,
+          c.country,
+          price ,
+          product_id ,
+          timestamp ,
+          year(cast( timestamp as TIMESTAMP(3)))  as "year" ,
+        month(cast( timestamp as TIMESTAMP(3))) as "month"
+        FROM "sales_csv" s join "customers_csv" c on s.customer_id = c.customer_id;
+
+        Select
+            firstname,
+            lastname,
+            sum(cast(price as decimal(6,2))) as total_sales
+        from "customer_sales_ctas"
+        where
+            month in (12,1)
+        group by firstname,lastname
+        order by 1,2;
+  LabsUserPassword:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Athena Workshop User Password
+      Name: /athenaworkshopuser/password
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: password
+        PasswordLength: 30
+  userA:
+    Type: AWS::IAM::User
+    Properties:
+      Path: /
+      LoginProfile:
+        Password: !Sub "{{resolve:secretsmanager:${LabsUserPassword}:SecretString:password}}"
+        PasswordResetRequired: false
+      Policies:
+        - PolicyName: Athena-WorkgroupA-Policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Put*
+                  - s3:Get*
+                  - s3:List*
+                  - glue:*
+                  - cloudwatch:*
+                  - athena:ListNamedQueries
+                  - athena:ListWorkGroups
+                  - athena:GetExecutionEngine
+                  - athena:GetExecutionEngines
+                  - athena:GetNamespace
+                  - athena:GetCatalogs
+                  - athena:GetNamespaces
+                  - athena:GetTables
+                  - athena:GetTable
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryResults
+                  - athena:DeleteNamedQuery
+                  - athena:GetNamedQuery
+                  - athena:ListQueryExecutions
+                  - athena:StopQueryExecution
+                  - athena:GetQueryResultsStream
+                  - athena:ListNamedQueries
+                  - athena:CreateNamedQuery
+                  - athena:GetQueryExecution
+                  - athena:BatchGetNamedQuery
+                  - athena:BatchGetQueryExecution
+                Resource:
+                  - !Join
+                    - ""
+                    - - "arn:aws:athena:"
+                      - !Ref AWS::Region
+                      - ":"
+                      - !Ref AWS::AccountId
+                      - ":workgroup/workgroupA"
+              - Effect: Allow
+                Action:
+                  - athena:DeleteWorkGroup
+                  - athena:UpdateWorkGroup
+                  - athena:GetWorkGroup
+                  - athena:CreateWorkGroup
+                Resource:
+                  - !Join
+                    - ""
+                    - - "arn:aws:athena:"
+                      - !Ref AWS::Region
+                      - ":"
+                      - !Ref AWS::AccountId
+                      - ":workgroup/workgroupA"
+      UserName: userA
+  userB:
+    Type: AWS::IAM::User
+    Properties:
+      Path: /
+      LoginProfile:
+        Password: !Sub "{{resolve:secretsmanager:${LabsUserPassword}:SecretString:password}}"
+        PasswordResetRequired: false
+      Policies:
+        - PolicyName: Athena-WorkgroupA-Policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:Put*
+                  - s3:Get*
+                  - s3:List*
+                  - glue:*
+                  - athena:ListWorkGroups
+                  - athena:GetExecutionEngine
+                  - athena:GetExecutionEngines
+                  - athena:GetNamespace
+                  - athena:GetCatalogs
+                  - athena:GetNamespaces
+                  - athena:GetTables
+                  - athena:GetTable
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryResults
+                  - athena:DeleteNamedQuery
+                  - athena:GetNamedQuery
+                  - athena:ListQueryExecutions
+                  - athena:StopQueryExecution
+                  - athena:GetQueryResultsStream
+                  - athena:ListNamedQueries
+                  - athena:CreateNamedQuery
+                  - athena:GetQueryExecution
+                  - athena:BatchGetNamedQuery
+                  - athena:BatchGetQueryExecution
+                Resource:
+                  - !Join
+                    - ""
+                    - - "arn:aws:athena:"
+                      - !Ref AWS::Region
+                      - ":"
+                      - !Ref AWS::AccountId
+                      - ":workgroup/workgroupB"
+              - Effect: Allow
+                Action:
+                  - athena:DeleteWorkGroup
+                  - athena:UpdateWorkGroup
+                  - athena:GetWorkGroup
+                  - athena:CreateWorkGroup
+                Resource:
+                  - !Join
+                    - ""
+                    - - "arn:aws:athena:"
+                      - !Ref AWS::Region
+                      - ":"
+                      - !Ref AWS::AccountId
+                      - ":workgroup/workgroupB"
+      UserName: userB
+Outputs:
+  S3Bucket:
+    Description: S3 bucket
+    Value: !Ref AthenaWorkShopBucket
+  ConsoleLogin:
+    Description: LoginUrl
+    Value: !Join
+      - ""
+      - - https://
+        - !Ref AWS::AccountId
+        - .signin.aws.amazon.com/console
+  ConsolePassword:
+    Description: AWS Secrets URL to find the generated password for User A and User B
+    Value: !Sub https://console.aws.amazon.com/secretsmanager/home?region=${AWS::Region}#/secret?name=/athenaworkshopuser/password
