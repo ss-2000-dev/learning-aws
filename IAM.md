@@ -22,3 +22,21 @@
 - ユースケース: AWS リソースと非 AWS アプリケーションの両方に対する SSO、複雑な環境における集中的な ID 管理、外部ディレクトリサービスとの統合の簡素化
 - AWS マネジメントコンソールのダッシュボードは、IAM ユーザーごとに表示される内容やアクセスできる機能が異なる
   - IAM（Identity and Access Management）によって各ユーザーに割り当てられた**アクセス許可（ポリシー）**に基づいている
+
+## 信頼ポリシー
+- 誰が（どのIAMユーザー、IAMロール、AWSアカウントなどが）、そのロールを引き受ける（使用する）ことを許可されるかを定義
+- ユーザーやサービスは、本来自分が持っていない権限を一時的に借用し、特定のリソースに安全にアクセスできるようになる
+- [IAM ロールの PassRole と AssumeRole をもう二度と忘れないために絵を描いてみた](https://dev.classmethod.jp/articles/iam-role-passrole-assumerole/)
+ex.
+```
+{
+  "Version":"2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "ec2.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
