@@ -1,0 +1,242 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Simple ECS CICD Pipeline
+# StackName: sample-ecs-cicd-stack
+
+Parameters:
+  Prefix:
+    Type: String
+    Default: sample-cicd-app
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Existing VPC ID
+    Default: vpc-08c9172c3ec4e81e5
+
+  SubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: Existing Public Subnet ID 1
+    Default: subnet-0a01ab2fa32f7ea5e
+
+  SubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Existing Public Subnet ID 2
+    Default: subnet-035bf28d06e6f63d4
+
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Existing Security Group ID
+    Default: sg-0b9e799df719dc93f
+
+Resources:
+  # ----------------------------
+  # CodeCommit
+  # ----------------------------
+  SampleRepository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Sub ${Prefix}-repo
+      RepositoryDescription: Source repository for ECS CICD sample
+
+  # ----------------------------
+  # ECR
+  # ----------------------------
+  SampleEcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${Prefix}-ecr-repo
+      ImageScanningConfiguration:
+        ScanOnPush: true
+
+  # ----------------------------
+  # ECS Cluster (ECS用)
+  # ----------------------------
+  SampleEcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${Prefix}-ecs-cluster
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  # ----------------------------
+  # IAM Role (Task Execution) (ECS用、ECSを呼び出す、実行するためのロール)
+  # ----------------------------
+  SampleTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecsTaskExecutionRoleForCicdSample
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  # ----------------------------
+  # CloudWatch Logs (ECS用)
+  # ----------------------------
+  SampleLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${Prefix}
+      RetentionInDays: 7
+
+  # ----------------------------
+  # ECS Task Definition (ECS用)
+  # ----------------------------
+  SampleTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${Prefix}-task
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt SampleTaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: !Ref Prefix # CodePipeline と必ず一致させる
+          Image: public.ecr.aws/docker/library/nginx:latest # ダミー
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref SampleLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: !Ref Prefix
+
+  # ----------------------------
+  # ECS Service (ECS用)
+  # ----------------------------
+  SampleService:
+    Type: AWS::ECS::Service
+    DependsOn: SampleEcsCluster
+    Properties:
+      ServiceName: !Sub ${Prefix}-service
+      Cluster: !Ref SampleEcsCluster
+      LaunchType: FARGATE
+      DesiredCount: 1
+      TaskDefinition: !Ref SampleTaskDefinition
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref SecurityGroupId
+          Subnets:
+            - !Ref SubnetId1
+            - !Ref SubnetId2
+
+  # ----------------------------
+  # IAM Role (CodeBuild用)
+  # ----------------------------
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Prefix}-codebuild-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: # TODO: 実務ではインラインポリシーにする
+        - arn:aws:iam::aws:policy/AWSCodeCommitReadOnly
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+
+  # ----------------------------
+  # CodeBuild Project
+  # ----------------------------
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${Prefix}-build
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Source:
+        Type: CODECOMMIT
+        Location: !Sub https://git-codecommit.ap-northeast-1.amazonaws.com/v1/repos/${Prefix}-repo
+        BuildSpec: |
+          version: 0.2
+
+          env:
+            variables:
+              ECR_REPO_NAME: ${Prefix}-ecr-repo
+              PREFIX: ${Prefix}
+
+          phases:
+            pre_build:
+              commands:
+                - echo Logging in to Amazon ECR...
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION |
+                  docker login --username AWS --password-stdin \
+                  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+                - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+            
+            build:
+              commands:
+                - echo Build Docker image
+                - docker build -t app .
+                - docker tag app:latest \
+                  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH
+            
+            post_build:
+              commands:
+                - echo Push Docker image
+                - docker push \
+                  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH
+                - printf '[{"name":"%s","imageUri":"%s"}]' \
+                  "$PREFIX" \
+                  "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH" \
+                  > imagedefinitions.json
+
+          artifacts:
+            files:
+              - imagedefinitions.json
+
+      Artifacts:
+        Type: NO_ARTIFACTS # TODO: まだ指定しない（まだPipeline未使用のため）
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/standard:7.0
+        PrivilegedMode: true # COMMENT: Docker buildのため
+        EnvironmentVariables:
+          - Name: AWS_ACCOUNT_ID
+            Value: !Ref AWS::AccountId
+          - Name: AWS_DEFAULT_REGION
+            Value: !Ref AWS::Region
+          - Name: ECR_REPO_NAME
+            Value: !Sub ${Prefix}-ecr-repo
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+
+  # PipelineRole
+
+  # ArtifactBucket
+
+  # CodePipeline
+
+  # EventBridgeRole
+
+  # CodeCommitEventRule
+# Outputs:
+#   CodeCommit:
+#     Value: !GetAtt SampleRepository.Name
+#   EcrUri:
+#     Value: !GetAtt SampleEcrRepository.RepositoryUri
+#   EcsClusterName:
+#     Value: !Ref SampleEcsCluster
+#   EcsServiceName:
+#     Value: !Ref SampleService
