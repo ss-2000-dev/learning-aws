@@ -102,6 +102,7 @@ Resources:
       ContainerDefinitions:
         - Name: !Ref Prefix # CodePipeline と必ず一致させる
           Image: public.ecr.aws/docker/library/nginx:latest # ダミー
+          # Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${Prefix}-ecr-repo
           Essential: true
           PortMappings:
             - ContainerPort: 80
@@ -158,6 +159,7 @@ Resources:
   # ----------------------------
   # CodeBuild Project
   # ----------------------------
+  # コマンドでわかりやすく改行したい...
   CodeBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -178,27 +180,20 @@ Resources:
             pre_build:
               commands:
                 - echo Logging in to Amazon ECR...
-                - aws ecr get-login-password --region $AWS_DEFAULT_REGION |
-                  docker login --username AWS --password-stdin \
-                  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
                 - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
             
             build:
               commands:
                 - echo Build Docker image
-                - docker build -t app .
-                - docker tag app:latest \
-                  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH
+                - docker build -t sample-cicd-app .
+                - docker tag sample-cicd-app:latest $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH
             
             post_build:
               commands:
                 - echo Push Docker image
-                - docker push \
-                  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH
-                - printf '[{"name":"%s","imageUri":"%s"}]' \
-                  "$PREFIX" \
-                  "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH" \
-                  > imagedefinitions.json
+                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH
+                - printf '[{"name":"%s","imageUri":"%s"}]' "$PREFIX" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH" > imagedefinitions.json
 
           artifacts:
             files:
