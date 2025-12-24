@@ -155,6 +155,18 @@ Resources:
         - arn:aws:iam::aws:policy/AWSCodeCommitReadOnly
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser
         - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+      Policies:
+        - PolicyName: CodeBuildArtifactAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:aws:s3:::${Prefix}-pipeline-artifacts/*
 
   # ----------------------------
   # CodeBuild Project
@@ -166,15 +178,9 @@ Resources:
       Name: !Sub ${Prefix}-build
       ServiceRole: !GetAtt CodeBuildRole.Arn
       Source:
-        Type: CODECOMMIT
-        Location: !Sub https://git-codecommit.ap-northeast-1.amazonaws.com/v1/repos/${Prefix}-repo
+        Type: CODEPIPELINE
         BuildSpec: |
           version: 0.2
-
-          env:
-            variables:
-              ECR_REPO_NAME: ${Prefix}-ecr-repo
-              PREFIX: ${Prefix}
 
           phases:
             pre_build:
@@ -193,14 +199,13 @@ Resources:
               commands:
                 - echo Push Docker image
                 - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH
-                - printf '[{"name":"%s","imageUri":"%s"}]' "$PREFIX" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH" > imagedefinitions.json
-
+                - printf '[{"name":"%s","imageUri":"%s"}]' "$CONTAINER_NAME" "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$ECR_REPO_NAME:$COMMIT_HASH" > imagedefinitions.json
           artifacts:
             files:
               - imagedefinitions.json
 
       Artifacts:
-        Type: NO_ARTIFACTS # TODO: まだ指定しない（まだPipeline未使用のため）
+        Type: CODEPIPELINE
       Environment:
         Type: LINUX_CONTAINER
         ComputeType: BUILD_GENERAL1_SMALL
@@ -213,15 +218,113 @@ Resources:
             Value: !Ref AWS::Region
           - Name: ECR_REPO_NAME
             Value: !Sub ${Prefix}-ecr-repo
+          - Name: CONTAINER_NAME
+            Value: !Ref Prefix
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
 
-  # PipelineRole
-
+  # ----------------------------
   # ArtifactBucket
+  # ----------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${Prefix}-pipeline-artifacts
 
+  # ----------------------------
+  # PipelineRole
+  # ----------------------------
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Prefix}-pipeline-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: # TODO: 実務ではインラインポリシーにする
+        - arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+      Policies:
+        - PolicyName: CodeCommitSourceAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codecommit:GetBranch
+                  - codecommit:GetCommit
+                  - codecommit:GetRepository
+                  - codecommit:GetUploadArchiveStatus
+                  - codecommit:UploadArchive
+                Resource: !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${Prefix}-repo
+        # 以下のみでいける？？？
+        # RegisterTaskDefinition
+        # UpdateService
+
+  # ----------------------------
   # CodePipeline
+  # ----------------------------
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${Prefix}-pipeline
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceFromCodeCommit
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: 1
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: !Sub ${Prefix}-repo
+                BranchName: main
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: BuildDockerImage
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: 1
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 1
+
+        - Name: Deploy
+          Actions:
+            - Name: DeployToECS
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: ECS
+                Version: 1
+              InputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ClusterName: !Ref SampleEcsCluster
+                ServiceName: !Ref SampleService
+                FileName: imagedefinitions.json
+              RunOrder: 1
 
   # EventBridgeRole
 
