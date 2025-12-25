@@ -159,3 +159,9 @@ codebuild.yaml
 codepipeline.yaml
 eventbridge.yaml
 ```
+
+5. **Blue/Green（CodeDeploy）**
+
+   - 無停止 & 切り戻し可能
+
+6. **IAM の最小権限化**

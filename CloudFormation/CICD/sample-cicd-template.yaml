@@ -292,6 +292,7 @@ Resources:
               Configuration:
                 RepositoryName: !Sub ${Prefix}-repo
                 BranchName: main
+                PollForSourceChanges: false
               RunOrder: 1
 
         - Name: Build
@@ -326,9 +327,56 @@ Resources:
                 FileName: imagedefinitions.json
               RunOrder: 1
 
-  # EventBridgeRole
+  # ----------------------------
+  #  IAM Role (EventBridge用)
+  # ----------------------------
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Prefix}-eventbridge-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartPipeline
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codepipeline:StartPipelineExecution
+                Resource: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Prefix}-pipeline
 
-  # CodeCommitEventRule
+  # ----------------------------
+  # EventBridge Rule
+  # ----------------------------
+  CodeCommitEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub ${Prefix}-codecommit-main-trigger
+      EventPattern:
+        source:
+          - aws.codecommit
+        detail-type:
+          - CodeCommit Repository State Change
+        resources:
+          - !Sub arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${Prefix}-repo
+        detail:
+          event:
+            - referenceCreated
+            - referenceUpdated
+          referenceType:
+            - branch
+          referenceName:
+            - main
+      Targets:
+        - Arn: !Sub arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Prefix}-pipeline
+          Id: StartPipeline
+          RoleArn: !GetAtt EventBridgeRole.Arn
 # Outputs:
 #   CodeCommit:
 #     Value: !GetAtt SampleRepository.Name
