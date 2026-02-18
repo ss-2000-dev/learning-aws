@@ -23,6 +23,10 @@ Resources:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: my-sample-ecs-cluster
+      ClusterSettings:
+        - Name: "containerInsights"
+          Value: "enhanced"
+          # Value: "enabled"
       CapacityProviders:
         - FARGATE
       DefaultCapacityProviderStrategy:
@@ -46,7 +50,7 @@ Resources:
   MyLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /ecs/example-task-for-exmaple-cloudformation
+      LogGroupName: /aws/ecs/example-task-for-exmaple-cloudformation
       RetentionInDays: 7
 
   MyTaskDefinition:
