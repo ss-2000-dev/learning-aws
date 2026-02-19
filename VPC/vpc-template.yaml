@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Default VPC'
+
+Resources:
+  # ------------------------
+  # VPC & Internet Gateway
+  # ------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: dafault-vpc
+  
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-InternetGateway
+  
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # ---------------------------
+  # Subnets (Public & Private)
+  # ---------------------------
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-northeast-1a
+      CidrBlock: 10.0.1.0/24
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PublicSubnet-1a
+  
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-northeast-1c
+      CidrBlock: 10.0.2.0/24
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PublicSubnet-1c
+
+  PrivateSubnet1:
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId: !Ref VPC
+        AvailabilityZone: ap-northeast-1a
+        CidrBlock: 10.0.10.0/24
+        Tags:
+          - Key: Name
+            Value: dafault-vpc-PrivateSubnet-1a
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: ap-northeast-1c
+      CidrBlock: 10.0.11.0/24
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PrivateSubnet-1c
+
+  # ---------------------------
+  # Route Tables
+  # ---------------------------
+  # パブリック用ルートテーブル
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # プライベート用ルートテーブル
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PrivateRouteTable
+
+  # NATが必要な場合に有効化
+  # PrivateRoute:
+  #   Type: AWS::EC2::Route
+  #   Properties:
+  #     RouteTableId: !Ref PrivateRouteTable
+  #     DestinationCidrBlock: 0.0.0.0/0
+  #     NatGatewayId: !Ref NatGateway
+
+  # ---------------------------
+  # Route Table Associations
+  # ---------------------------
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+  
+  # ---------------------
+  # Security Groups
+  # ---------------------
+  # パブリックサブネット用
+  PublicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: default-vpc-public-sg
+      GroupDescription: Allow HTTP/HTTPS access from Internet
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        # SSH接続が必要な場合は、IPアドレスを指定して有効化
+        # - IpProtocol: tcp
+        #   FromPort: 22
+        #   ToPort: 22
+        #   CidrIp: IP_ADDRESS/32
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PublicSecurityGroup
+
+  # プライベートサブネット用：パブリックSGからの通信のみを許可
+  PrivateSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: default-vpc-private-sg
+      GroupDescription: Allow traffic from PublicSecurityGroup only
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PrivateSecurityGroup
+
+  # ------------------------------------------
+  # NAT Gateway & EIP (NATが必要な場合に有効化)
+  # ------------------------------------------
+  # NatGatewayEIP:
+  #   Type: AWS::EC2::EIP
+  #   Properties:
+  #     Domain: vpc
+  #
+  # NatGateway:
+  #   Type: AWS::EC2::NatGateway
+  #   Properties:
+  #     AllocationId: !GetAtt NatGatewayEIP.AllocationId
+  #     SubnetId: !Ref PublicSubnet1
+  #     Tags:
+  #       - Key: Name
+  #         Value: MainNatGateway
+
+Outputs:
+  VpcId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: "Default-VpcId"
+
+  PublicSubnet1Id:
+    Description: Public Subnet 1 ID
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: "Default-PublicSubnet1Id"
+
+  PublicSubnet2Id:
+    Description: Public Subnet 2 ID
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: "Default-PublicSubnet2Id"
+
+  PrivateSubnet1Id:
+    Description: Private Subnet 1 ID
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: "Default-PrivateSubnet1Id"
+
+  PrivateSubnet2Id:
+    Description: Private Subnet 2 ID
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: "Default-PrivateSubnet2Id"
+
+  PublicSecurityGroupId:
+    Description: Public Security Group ID
+    Value: !Ref PublicSecurityGroup
+    Export:
+      Name: "Default-PublicSecurityGroupId"
+
+  PrivateSecurityGroupId:
+    Description: Private Security Group ID
+    Value: !Ref PrivateSecurityGroup
+    Export:
+      Name: "Default-PrivateSecurityGroupId"

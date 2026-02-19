@@ -9,3 +9,7 @@
 - WAF
 - CloudFront
 - EKS(kubernetes)
+
+### Tips
+- AWS Resource Explorer めちゃ便利
+- 徐々にコンソールからポチポチからCloudFormation テンプレートに移行していきたい...
