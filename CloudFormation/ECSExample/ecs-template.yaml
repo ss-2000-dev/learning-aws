@@ -2,21 +2,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Create ECS
 
 Parameters:
-  VpcId:
-    Type: String
-    Description: Existing VPC ID
-  SubnetId1:
-    Type: String
-    Description: Existing Subnet ID 1
-  SubnetId2:
-    Type: String
-    Description: Existing Subnet ID 2
-  SecurityGroupId:
-    Type: String
-    Description: Existing Security Group ID
   ContainerImage:
     Type: String
     Description: ECR image URI
+    Default : 618584750402.dkr.ecr.ap-northeast-1.amazonaws.com/express-server-for-cloudformation-test:latest
 
 Resources:
   MyEcsCluster:
@@ -89,7 +78,31 @@ Resources:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
           SecurityGroups:
-            - !Ref SecurityGroupId
+            - !Ref PublicECSSecurityGroup
           Subnets:
-            - !Ref SubnetId1
-            - !Ref SubnetId2
+            - !ImportValue Default-PublicSubnet1Id
+            - !ImportValue Default-PublicSubnet2Id
+
+  # Security Group for ECS
+  PublicECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: default-vpc-public-sg-for-ecs-new
+      GroupDescription: Allow HTTP/HTTPS access from Internet (and 3000 for ECS Develop)
+      VpcId: !ImportValue Default-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: dafault-vpc-PublicECSSecurityGroup
