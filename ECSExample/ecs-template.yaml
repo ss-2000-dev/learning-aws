@@ -16,6 +16,7 @@ Resources:
         - CapacityProvider: FARGATE
           Weight: 1
 
+  # ECSを実行する権限
   MyTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -29,6 +30,51 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: S3ConfigReadPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                # 最小権限: extra.confファイルのみに絞る
+                Resource: "arn:aws:s3:::ecs-log-alart-test-2026-02-23/extra.conf" # 仮
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                Resource: "arn:aws:s3:::ecs-log-alart-test-2026-02-23"
+
+  # ECS自身の権限
+  MyTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecsTaskRoleForECSTest
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FluentBitLogDestinations
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                  - logs:CreateLogGroup
+                Resource: 
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/example-task-for-test/*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/example-task-for-test"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: "arn:aws:s3:::ecs-log-alart-test-2026-02-23/*"
 
   MyLogGroup:
     Type: AWS::Logs::LogGroup
@@ -46,7 +92,9 @@ Resources:
       RequiresCompatibilities:
         - FARGATE
       ExecutionRoleArn: !GetAtt MyTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt MyTaskRole.Arn
       ContainerDefinitions:
+        # アプリケーションコンテナ
         - Name: node-express-container
           Image: !Sub 
             - "${RepoUri}:latest"
@@ -55,11 +103,28 @@ Resources:
           PortMappings:
             - ContainerPort: 3000
           LogConfiguration:
+            LogDriver: awsfirelens
+            Options:
+              Name: fluent-bit # エラー回避用
+          DependsOn:
+            - ContainerName: log_router
+              Condition: START
+        # FireLens (Fluent Bit) サイドカーコンテナ
+        - Name: log_router
+          Image: public.ecr.aws/aws-observability/aws-for-fluent-bit:stable
+          Essential: true
+          FirelensConfiguration:
+            Type: fluentbit
+            Options:
+              config-file-type: s3 # これがエラー？？？
+              config-file-value: "arn:aws:s3:::ecs-log-alart-test-2026-02-23/extra.conf" # 仮
+          LogConfiguration:
             LogDriver: awslogs
             Options:
+              # Fluent Bit自身の動作ログを出力（トラブルシューティング用）
               awslogs-group: !Ref MyLogGroup
               awslogs-region: !Ref AWS::Region
-              awslogs-stream-prefix: example-task-for-exmaple-cloudformation
+              awslogs-stream-prefix: fluent-bit-internal
 
   MyService:
     Type: AWS::ECS::Service
@@ -68,6 +133,7 @@ Resources:
       ServiceName: test-ecs-service
       Cluster: !Ref MyEcsCluster
       LaunchType: FARGATE
+      PlatformVersion: 1.4.0
       DesiredCount: 1
       TaskDefinition: !Ref MyTaskDefinition
       NetworkConfiguration:
@@ -102,3 +168,11 @@ Resources:
       Tags:
         - Key: Name
           Value: dafault-vpc-PublicECSSecurityGroup
+
+# 元々のアプリのログ設定
+# LogConfiguration:
+#   LogDriver: awslogs
+#   Options:
+#     awslogs-group: !Ref MyLogGroup
+#     awslogs-region: !Ref AWS::Region
+#     awslogs-stream-prefix: example-task-for-exmaple-cloudformation

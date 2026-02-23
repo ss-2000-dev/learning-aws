@@ -1,0 +1,62 @@
+# 1. 実行ロール (Execution Role): タスク起動時に設定ファイルを取得するために使用
+  MyTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecsTaskExecutionRoleForECSTest
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: S3ConfigReadPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                # 最小権限: extra.confファイルのみに絞る
+                Resource: !Sub "arn:aws:s3:::${LoggingConfigBucket}/extra.conf"
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                Resource: !Sub "arn:aws:s3:::${LoggingConfigBucket}"
+
+  # 2. タスクロール (Task Role): Fluent Bitが稼働中にS3/CloudWatchへログを送るために使用
+  MyTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ecsTaskRoleForECSTest
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FluentBitLogDestinations
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # CloudWatch Logs への書き込み権限
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                  - logs:CreateLogGroup
+                Resource: 
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/example-task/app:*"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/example-task/app"
+              # S3 への書き込み権限
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                # 最小権限: 保存先のパス配下のみに絞る
+                Resource: !Sub "arn:aws:s3:::${LogArchiveBucket}/app-logs/*"
