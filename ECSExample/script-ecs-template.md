@@ -77,3 +77,6 @@ aws ecr delete-repository \
   --repository-name express-server-for-cloudformation-test \
   --force
 ```
+
+# 2026-02-20 
+`http://{PublicIP}:3000`でアクセスできるようになった
