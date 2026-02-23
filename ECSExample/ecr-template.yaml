@@ -1,0 +1,15 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ECR Template
+
+Resources:
+  EcsTestEcr:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageTagMutability: MUTABLE
+      RepositoryName: ecs-test
+
+Outputs:
+  EcsTestEcrRepoUri:
+    Value: !GetAtt EcsTestEcr.RepositoryUri
+    Export:
+      Name: EcsTestEcrRepoUri

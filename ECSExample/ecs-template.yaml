@@ -1,11 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Create ECS
-
-Parameters:
-  ContainerImage:
-    Type: String
-    Description: ECR image URI
-    Default : 618584750402.dkr.ecr.ap-northeast-1.amazonaws.com/express-server-for-cloudformation-test:latest
+Description: ECS Test
 
 Resources:
   MyEcsCluster:
@@ -25,7 +19,7 @@ Resources:
   MyTaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: ecsTaskExecutionRoleForExmapleCloudFormation
+      RoleName: ecsTaskExecutionRoleForECSTest
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -39,13 +33,13 @@ Resources:
   MyLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /aws/ecs/example-task-for-exmaple-cloudformation
+      LogGroupName: /aws/ecs/example-task-for-test
       RetentionInDays: 7
 
   MyTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: example-task-for-exmaple-cloudformation
+      Family: example-task-for-ecs-test
       Cpu: 256
       Memory: 512
       NetworkMode: awsvpc
@@ -54,7 +48,9 @@ Resources:
       ExecutionRoleArn: !GetAtt MyTaskExecutionRole.Arn
       ContainerDefinitions:
         - Name: node-express-container
-          Image: !Ref ContainerImage
+          Image: !Sub 
+            - "${RepoUri}:latest"
+            - RepoUri: !ImportValue EcsTestEcrRepoUri
           Essential: true
           PortMappings:
             - ContainerPort: 3000
@@ -69,7 +65,7 @@ Resources:
     Type: AWS::ECS::Service
     DependsOn: MyEcsCluster
     Properties:
-      ServiceName: cloudformation-test-service
+      ServiceName: test-ecs-service
       Cluster: !Ref MyEcsCluster
       LaunchType: FARGATE
       DesiredCount: 1

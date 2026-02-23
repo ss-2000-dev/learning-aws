@@ -24,23 +24,31 @@ aws cloudformation validate-template --template-body file://ecs-template.yaml
 
 イメージ作成
 
-```
-docker build -t express-server-for-cloudformation-test .
+```sh
+docker build -t ecs-test .
 ```
 
-ECR リポジトリ作成
-
-```
-aws ecr create-repository --repository-name express-server-for-cloudformation-test
+```sh
+docker build --platform linux/amd64 -t ecs-test .
 ```
 
 プッシュ
+```sh
+ACCOUNT_ID="{ACCOUNT_ID}"
+```
 
+```sh
+aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.ap-northeast-1.amazonaws.com
 ```
-aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin {account-id}.dkr.ecr.ap-northeast-1.amazonaws.com \
-docker tag express-server-for-cloudformation-test:latest {account-id}.dkr.ecr.ap-northeast-1.amazonaws.com/express-server-for-cloudformation-test:latest \
-docker push {account-id}.dkr.ecr.ap-northeast-1.amazonaws.com/express-server-for-cloudformation-test:latest
+
+```sh
+docker tag ecs-test:latest ${ACCOUNT_ID}.dkr.ecr.ap-northeast-1.amazonaws.com/ecs-test:latest  \
 ```
+
+```sh
+docker push ${ACCOUNT_ID}.dkr.ecr.ap-northeast-1.amazonaws.com/ecs-test:latest
+```
+
 
 デプロイ
 
@@ -54,7 +62,7 @@ aws cloudformation deploy \
  SubnetId1={subnet1-id} \
  SubnetId2={subnet2-id} \
  SecurityGroupId={securitygroup-id} \
- ContainerImage={account-id}.dkr.ecr.ap-northeast-1.amazonaws.com/express-server-for-cloudformation-test:latest
+ ContainerImage={account-id}.dkr.ecr.ap-northeast-1.amazonaws.com/ecs-test:latest
 ```
 
 削除（安全に削除するなら、ECS タスクを停止してから）
@@ -74,7 +82,7 @@ ECR リポジトリも削除
 
 ```
 aws ecr delete-repository \
-  --repository-name express-server-for-cloudformation-test \
+  --repository-name ecs-test \
   --force
 ```
 
