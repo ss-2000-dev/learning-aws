@@ -31,19 +31,14 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
       Policies:
-        - PolicyName: S3ConfigReadPolicy
+        - PolicyName: S3FullAccessForConfigFetch
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
-                  - s3:GetObject
-                # 最小権限: extra.confファイルのみに絞る
-                Resource: "arn:aws:s3:::ecs-log-alart-test-2026-02-23/extra.conf" # 仮
-              - Effect: Allow
-                Action:
-                  - s3:GetBucketLocation
-                Resource: "arn:aws:s3:::ecs-log-alart-test-2026-02-23"
+                  - "s3:*"
+                Resource: "*"
 
   # ECS自身の権限
   MyTaskRole:
@@ -58,23 +53,20 @@ Resources:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: FluentBitLogDestinations
+        - PolicyName: FluentBitFullDestinations
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # CloudWatch Logs への全権限
               - Effect: Allow
                 Action:
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                  - logs:DescribeLogStreams
-                  - logs:CreateLogGroup
-                Resource: 
-                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/example-task-for-test/*"
-                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/ecs/example-task-for-test"
+                  - "logs:*"
+                Resource: "*"
+              # S3 への全権限
               - Effect: Allow
                 Action:
-                  - s3:PutObject
-                Resource: "arn:aws:s3:::ecs-log-alart-test-2026-02-23/*"
+                  - "s3:*"
+                Resource: "*"
 
   MyLogGroup:
     Type: AWS::Logs::LogGroup
@@ -104,20 +96,20 @@ Resources:
             - ContainerPort: 3000
           LogConfiguration:
             LogDriver: awsfirelens
-            Options:
-              Name: fluent-bit # エラー回避用
           DependsOn:
             - ContainerName: log_router
               Condition: START
         # FireLens (Fluent Bit) サイドカーコンテナ
         - Name: log_router
           Image: public.ecr.aws/aws-observability/aws-for-fluent-bit:stable
-          Essential: true
           FirelensConfiguration:
             Type: fluentbit
-            Options:
-              config-file-type: s3 # これがエラー？？？
-              config-file-value: "arn:aws:s3:::ecs-log-alart-test-2026-02-23/extra.conf" # 仮
+            # Options:
+            #   config-file-type: file 
+            #   config-file-value: /extra.conf
+          Environment:
+            - Name: aws_fluent_bit_init_s3_1
+              Value: "arn:aws:s3:::ecs-log-alart-test-2026-02-23/extra.conf" # 仮
           LogConfiguration:
             LogDriver: awslogs
             Options:
