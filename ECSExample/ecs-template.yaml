@@ -118,6 +118,78 @@ Resources:
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: fluent-bit-internal
 
+  MyTaskDefinition2:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: example-task-for-ecs-test-2
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt MyTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt MyTaskRole.Arn
+      ContainerDefinitions:
+        # アプリケーションコンテナ
+        - Name: node-express-container
+          Image: !Sub 
+            - "${RepoUri}:latest"
+            - RepoUri: !ImportValue EcsTestEcrRepoUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3000
+          LogConfiguration: # 標準出力がログに出るか確認
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MyLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app-log-test-2
+
+  MyTaskDefinition3:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: example-task-for-ecs-test-3
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt MyTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt MyTaskRole.Arn
+      ContainerDefinitions:
+        # アプリケーションコンテナ
+        - Name: node-express-container
+          Image: !Sub 
+            - "${RepoUri}:latest"
+            - RepoUri: !ImportValue EcsTestEcrRepoUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 3000
+          LogConfiguration:
+            LogDriver: awsfirelens
+            Options:
+              Name: cloudwatch
+              region: !Ref AWS::Region
+              log_group_name: !Ref MyLogGroup
+              auto_create_group: true
+              log_stream_name: "task-3-app-log"
+              retry_limit: 2
+          DependsOn:
+            - ContainerName: log_router
+              Condition: START
+        # FireLens (Fluent Bit) サイドカーコンテナ
+        - Name: log_router
+          Image: public.ecr.aws/aws-observability/aws-for-fluent-bit:stable
+          FirelensConfiguration:
+            Type: fluentbit
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              # Fluent Bit自身の動作ログを出力（トラブルシューティング用）
+              awslogs-group: !Ref MyLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: fluent-bit-internal
+
   MyService:
     Type: AWS::ECS::Service
     DependsOn: MyEcsCluster
@@ -128,6 +200,44 @@ Resources:
       PlatformVersion: 1.4.0
       DesiredCount: 1
       TaskDefinition: !Ref MyTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref PublicECSSecurityGroup
+          Subnets:
+            - !ImportValue Default-PublicSubnet1Id
+            - !ImportValue Default-PublicSubnet2Id
+
+  MyService2:
+    Type: AWS::ECS::Service
+    DependsOn: MyEcsCluster
+    Properties:
+      ServiceName: test-ecs-service-2
+      Cluster: !Ref MyEcsCluster
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      DesiredCount: 1
+      TaskDefinition: !Ref MyTaskDefinition2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref PublicECSSecurityGroup
+          Subnets:
+            - !ImportValue Default-PublicSubnet1Id
+            - !ImportValue Default-PublicSubnet2Id
+
+  MyService3:
+    Type: AWS::ECS::Service
+    DependsOn: MyEcsCluster
+    Properties:
+      ServiceName: test-ecs-service-3
+      Cluster: !Ref MyEcsCluster
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      DesiredCount: 1
+      TaskDefinition: !Ref MyTaskDefinition3
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
