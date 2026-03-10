@@ -1,0 +1,15 @@
+# 参考にした記事
+- https://github.com/aws-samples/amazon-ecs-firelens-examples/tree/mainline/examples/fluent-bit
+- https://github.com/aws-samples/amazon-ecs-firelens-examples/blob/mainline/examples/fluent-bit/cloudwatchlogs/task-definition-cloudwatch.json#L6
+- https://github.com/aws-samples/amazon-ecs-firelens-examples/blob/mainline/examples/fluent-bit/cloudwatchlogs/task-definition-cloudwatch_logs.json
+- https://github.com/aws/amazon-cloudwatch-logs-for-fluent-bit
+- https://dev.classmethod.jp/articles/aws-firelens-to-s3-with-data-firehose-dynamic-partitioning/
+- https://docs.fluentbit.io/manual/data-pipeline/outputs/cloudwatch
+- https://docs.fluentbit.io/manual/data-pipeline/inputs/tail
+- https://docs.aws.amazon.com/ja_jp/AmazonECS/latest/developerguide/firelens-docker-buffer-limit.html
+- https://aws.amazon.com/jp/blogs/news/under-the-hood-firelens-for-amazon-ecs-tasks/
+- https://kaminashi-developer.hatenablog.jp/entry/2025/3/21/aws-cloudwatch-cost-optimization
+- https://dev.classmethod.jp/articles/cloudwatch-logs-to-s3-via-kinesis-data-firehose/
+- https://dev.classmethod.jp/articles/tsnote-cloudwatch-logs-logrotate/
+- 
+- 
