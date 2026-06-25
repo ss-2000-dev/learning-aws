@@ -1,0 +1,373 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "CloudFront 用 WAF テンプレート（商用レベル・設定フル）\n\n【重要】このテンプレートは必ず us-east-1（バージニア北部）にデプロイすること。\nCloudFront の WAF は Scope=CLOUDFRONT を使用しており、us-east-1 以外ではデプロイ不可。\n\n含まれるルール（Priority 昇順）:\n  0: IP 許可リスト（管理者 IP を最優先で ALLOW）\n  1: IP ブロックリスト（悪意ある IP を BLOCK）\n  2: AWS IP レピュテーションリスト（AWS 管理の悪意ある IP を BLOCK）\n  3: 匿名 IP リスト（Tor / VPN / プロキシを BLOCK）\n  4: コアルールセット（OWASP Top 10 対策）\n  5: 既知の悪意あるリクエスト（Log4Shell, SSRF 等を BLOCK）\n  6: SQL インジェクション対策\n  7: Linux コマンドインジェクション対策\n  8: レートリミット（5,000 req / 5分で BLOCK）\n",
+  "Parameters": {
+    "Environment": {
+      "Type": "String",
+      "Description": "環境名（リソース名や CloudWatch メトリクス名の prefix に使用）",
+      "AllowedValues": [
+        "production",
+        "staging",
+        "development"
+      ],
+      "Default": "production"
+    },
+    "RateLimitThreshold": {
+      "Type": "Number",
+      "Description": "レートリミットのしきい値（5分間あたりのリクエスト数）\n同一 IP がこの数を超えるリクエストを送ってきた場合にブロックする\n推奨: 商用 5000、小規模 2000、高トラフィック 10000\n",
+      "Default": 5000,
+      "MinValue": 100,
+      "MaxValue": 20000000
+    }
+  },
+  "Resources": {
+    "AllowIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-cf-allow-ip-set"
+        },
+        "Description": "CloudFront WAF 許可リスト（管理者・社内 IP）",
+        "Scope": "CLOUDFRONT",
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "203.0.113.10/32",
+          "198.51.100.0/24",
+          "203.0.113.100/32"
+        ],
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
+    "BlockIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-cf-block-ip-set"
+        },
+        "Description": "CloudFront WAF ブロックリスト（悪意ある IP）",
+        "Scope": "CLOUDFRONT",
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "192.0.2.100/32",
+          "192.0.2.200/32",
+          "192.0.2.0/28"
+        ],
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
+    "WebACL": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-cloudfront-waf"
+        },
+        "Description": "CloudFront 用 商用 WAF（フルセット）",
+        "Scope": "CLOUDFRONT",
+        "DefaultAction": {
+          "Allow": {}
+        },
+        "Rules": [
+          {
+            "Name": "AllowListedIPs",
+            "Priority": 0,
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": [
+                    "AllowIpSet",
+                    "Arn"
+                  ]
+                }
+              }
+            },
+            "Action": {
+              "Allow": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFAllowListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "BlockListedIPs",
+            "Priority": 1,
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": [
+                    "BlockIpSet",
+                    "Arn"
+                  ]
+                }
+              }
+            },
+            "Action": {
+              "Block": {
+                "CustomResponse": {
+                  "ResponseCode": 403
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFBlockListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesAmazonIpReputationList",
+            "Priority": 2,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesAmazonIpReputationList"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFIpReputationList"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesAnonymousIpList",
+            "Priority": 3,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesAnonymousIpList"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFAnonymousIpList"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesCommonRuleSet",
+            "Priority": 4,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesCommonRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFCommonRuleSet"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+            "Priority": 5,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesKnownBadInputsRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFKnownBadInputs"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesSQLiRuleSet",
+            "Priority": 6,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesSQLiRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFSQLiRuleSet"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesLinuxRuleSet",
+            "Priority": 7,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesLinuxRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFLinuxRuleSet"
+              }
+            }
+          },
+          {
+            "Name": "RateLimit",
+            "Priority": 8,
+            "Statement": {
+              "RateBasedStatement": {
+                "Limit": {
+                  "Ref": "RateLimitThreshold"
+                },
+                "AggregateKeyType": "IP",
+                "ScopeDownStatement": {
+                  "NotStatement": {
+                    "Statement": {
+                      "IPSetReferenceStatement": {
+                        "Arn": {
+                          "Fn::GetAtt": [
+                            "AllowIpSet",
+                            "Arn"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Action": {
+              "Block": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}CFRateLimit"
+              }
+            }
+          }
+        ],
+        "VisibilityConfig": {
+          "SampledRequestsEnabled": true,
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": {
+            "Fn::Sub": "${Environment}CloudFrontWAF"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "cloudfront-waf"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "WebACLArn": {
+      "Description": "WAF Web ACL の ARN\nCloudFront ディストリビューションの WebACLId にこの ARN を設定してアタッチする\n",
+      "Value": {
+        "Fn::GetAtt": [
+          "WebACL",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebACLArn"
+        }
+      }
+    },
+    "WebACLId": {
+      "Description": "WAF Web ACL の ID",
+      "Value": {
+        "Fn::GetAtt": [
+          "WebACL",
+          "Id"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebACLId"
+        }
+      }
+    },
+    "AllowIpSetArn": {
+      "Description": "許可リスト IP セットの ARN（IP の追加・変更時に参照）",
+      "Value": {
+        "Fn::GetAtt": [
+          "AllowIpSet",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-AllowIpSetArn"
+        }
+      }
+    },
+    "BlockIpSetArn": {
+      "Description": "ブロックリスト IP セットの ARN（IP の追加・変更時に参照）",
+      "Value": {
+        "Fn::GetAtt": [
+          "BlockIpSet",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-BlockIpSetArn"
+        }
+      }
+    }
+  }
+}

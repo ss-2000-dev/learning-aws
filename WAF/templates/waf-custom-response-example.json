@@ -1,0 +1,352 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "WAF カスタムレスポンス・デフォルトアクション サンプルテンプレート\n\nこのテンプレートは以下のパターンを例示することを目的にしている:\n  1. デフォルトアクション Allow（ブラックリスト方式）\n  2. デフォルトアクション Block（ホワイトリスト方式）\n  3. カスタムレスポンスボディ（JSON / HTML / テキスト）\n  4. カスタムレスポンスステータスコード（403 / 404 / 429）\n  5. カスタムレスポンスヘッダー（Retry-After 等）\n\n注意: このテンプレートは学習用サンプルのため、ALB ARN は空デフォルトにしている\n",
+  "Parameters": {
+    "Environment": {
+      "Type": "String",
+      "Default": "development",
+      "AllowedValues": [
+        "production",
+        "staging",
+        "development"
+      ]
+    },
+    "DefaultActionType": {
+      "Type": "String",
+      "Description": "Allow: どのルールにも一致しないリクエストを許可（ブラックリスト方式・一般的）\nBlock: どのルールにも一致しないリクエストをブロック（ホワイトリスト方式・厳格）\n",
+      "AllowedValues": [
+        "Allow",
+        "Block"
+      ],
+      "Default": "Allow"
+    },
+    "AlbArn": {
+      "Type": "String",
+      "Default": ""
+    }
+  },
+  "Conditions": {
+    "IsDefaultAllow": {
+      "Fn::Equals": [
+        {
+          "Ref": "DefaultActionType"
+        },
+        "Allow"
+      ]
+    },
+    "HasAlbArn": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AlbArn"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Resources": {
+    "AllowIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-sample-allow-ip-set"
+        },
+        "Scope": "REGIONAL",
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "203.0.113.10/32",
+          "198.51.100.0/24"
+        ]
+      }
+    },
+    "BlockIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-sample-block-ip-set"
+        },
+        "Scope": "REGIONAL",
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "192.0.2.100/32"
+        ]
+      }
+    },
+    "WebACL": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-custom-response-sample-waf"
+        },
+        "Scope": "REGIONAL",
+        "DefaultAction": {
+          "Fn::If": [
+            "IsDefaultAllow",
+            {
+              "Allow": {}
+            },
+            {
+              "Block": {}
+            }
+          ]
+        },
+        "CustomResponseBodies": {
+          "JsonForbidden": {
+            "ContentType": "APPLICATION_JSON",
+            "Content": "{\"error\":\"Forbidden\",\"message\":\"Your IP address has been blocked.\",\"code\":403}"
+          },
+          "JsonTooManyRequests": {
+            "ContentType": "APPLICATION_JSON",
+            "Content": "{\"error\":\"TooManyRequests\",\"message\":\"Rate limit exceeded. Please retry after 60 seconds.\",\"code\":429}"
+          },
+          "HtmlNotFound": {
+            "ContentType": "TEXT_HTML",
+            "Content": "<!DOCTYPE html><html><head><title>404 Not Found</title></head> <body><h1>404 Not Found</h1><p>The requested URL was not found.</p></body></html>"
+          },
+          "PlainForbidden": {
+            "ContentType": "TEXT_PLAIN",
+            "Content": "403 Forbidden"
+          }
+        },
+        "Rules": [
+          {
+            "Name": "AllowListedIPs",
+            "Priority": 0,
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": [
+                    "AllowIpSet",
+                    "Arn"
+                  ]
+                }
+              }
+            },
+            "Action": {
+              "Allow": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}SampleAllowListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "BlockListedIPs",
+            "Priority": 1,
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": [
+                    "BlockIpSet",
+                    "Arn"
+                  ]
+                }
+              }
+            },
+            "Action": {
+              "Block": {
+                "CustomResponse": {
+                  "ResponseCode": 403,
+                  "CustomResponseBodyKey": "JsonForbidden",
+                  "ResponseHeaders": [
+                    {
+                      "Name": "X-Block-Reason",
+                      "Value": "ip-blocklist"
+                    }
+                  ]
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}SampleBlockListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "HideAdminPaths",
+            "Priority": 2,
+            "Statement": {
+              "OrStatement": {
+                "Statements": [
+                  {
+                    "ByteMatchStatement": {
+                      "FieldToMatch": {
+                        "UriPath": {}
+                      },
+                      "PositionalConstraint": "STARTS_WITH",
+                      "SearchString": "/admin",
+                      "TextTransformations": [
+                        {
+                          "Priority": 0,
+                          "Type": "LOWERCASE"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "ByteMatchStatement": {
+                      "FieldToMatch": {
+                        "UriPath": {}
+                      },
+                      "PositionalConstraint": "STARTS_WITH",
+                      "SearchString": "/wp-admin",
+                      "TextTransformations": [
+                        {
+                          "Priority": 0,
+                          "Type": "LOWERCASE"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "ByteMatchStatement": {
+                      "FieldToMatch": {
+                        "UriPath": {}
+                      },
+                      "PositionalConstraint": "STARTS_WITH",
+                      "SearchString": "/.env",
+                      "TextTransformations": [
+                        {
+                          "Priority": 0,
+                          "Type": "LOWERCASE"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            },
+            "Action": {
+              "Block": {
+                "CustomResponse": {
+                  "ResponseCode": 404,
+                  "CustomResponseBodyKey": "HtmlNotFound"
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}SampleHideAdminPaths"
+              }
+            }
+          },
+          {
+            "Name": "RateLimit",
+            "Priority": 3,
+            "Statement": {
+              "RateBasedStatement": {
+                "Limit": 5000,
+                "AggregateKeyType": "IP",
+                "ScopeDownStatement": {
+                  "NotStatement": {
+                    "Statement": {
+                      "IPSetReferenceStatement": {
+                        "Arn": {
+                          "Fn::GetAtt": [
+                            "AllowIpSet",
+                            "Arn"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Action": {
+              "Block": {
+                "CustomResponse": {
+                  "ResponseCode": 429,
+                  "CustomResponseBodyKey": "JsonTooManyRequests",
+                  "ResponseHeaders": [
+                    {
+                      "Name": "Retry-After",
+                      "Value": "60"
+                    },
+                    {
+                      "Name": "X-Block-Reason",
+                      "Value": "rate-limit-exceeded"
+                    }
+                  ]
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}SampleRateLimit"
+              }
+            }
+          }
+        ],
+        "VisibilityConfig": {
+          "SampledRequestsEnabled": true,
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": {
+            "Fn::Sub": "${Environment}CustomResponseSampleWAF"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "custom-response-sample"
+          }
+        ]
+      }
+    },
+    "WebACLAssociation": {
+      "Type": "AWS::WAFv2::WebACLAssociation",
+      "Condition": "HasAlbArn",
+      "Properties": {
+        "ResourceArn": {
+          "Ref": "AlbArn"
+        },
+        "WebACLArn": {
+          "Fn::GetAtt": [
+            "WebACL",
+            "Arn"
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "WebACLArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "WebACL",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebACLArn"
+        }
+      }
+    },
+    "DefaultActionNote": {
+      "Description": "現在のデフォルトアクション設定",
+      "Value": {
+        "Fn::Sub": "DefaultAction is ${DefaultActionType} (${DefaultActionType} = ${DefaultActionType} mode)"
+      }
+    }
+  }
+}

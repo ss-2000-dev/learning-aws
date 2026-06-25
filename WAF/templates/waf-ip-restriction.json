@@ -1,0 +1,345 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "WAF IP 制限特化テンプレート\n- IP 許可リスト（管理者・社内 IP のみ許可）\n- IP ブロックリスト（悪意ある IP をブロック）\n- ALB または CloudFront に紐付け可能\n注意: CloudFront に使う場合は us-east-1 でデプロイすること\n",
+  "Parameters": {
+    "Environment": {
+      "Type": "String",
+      "Description": "環境名（ログやメトリクス名の prefix に使用）",
+      "AllowedValues": [
+        "production",
+        "staging",
+        "development"
+      ],
+      "Default": "production"
+    },
+    "Scope": {
+      "Type": "String",
+      "Description": "WAF のスコープ\nCLOUDFRONT: CloudFront 用（us-east-1 でのデプロイ必須）\nREGIONAL: ALB / API Gateway 用（ALB と同じリージョンでデプロイ）\n",
+      "AllowedValues": [
+        "CLOUDFRONT",
+        "REGIONAL"
+      ],
+      "Default": "REGIONAL"
+    },
+    "AlbArn": {
+      "Type": "String",
+      "Description": "WAF をアタッチする ALB の ARN\n例: arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:loadbalancer/app/my-alb/abc123\n空文字の場合はアタッチしない（Scope が CLOUDFRONT の場合は空にする）\n",
+      "Default": ""
+    }
+  },
+  "Conditions": {
+    "HasAlbArn": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AlbArn"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Resources": {
+    "AllowIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-allow-ip-set"
+        },
+        "Description": "管理者・社内 IP の許可リスト",
+        "Scope": {
+          "Ref": "Scope"
+        },
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "203.0.113.10/32",
+          "198.51.100.0/24",
+          "203.0.113.100/32"
+        ],
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "ip-allowlist"
+          }
+        ]
+      }
+    },
+    "AllowIpSetV6": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-allow-ip-set-v6"
+        },
+        "Description": "管理者・社内 IP の許可リスト（IPv6）",
+        "Scope": {
+          "Ref": "Scope"
+        },
+        "IPAddressVersion": "IPV6",
+        "Addresses": [
+          "2001:db8::/32"
+        ],
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "ip-allowlist-v6"
+          }
+        ]
+      }
+    },
+    "BlockIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-block-ip-set"
+        },
+        "Description": "悪意ある IP・攻撃元 IP のブロックリスト",
+        "Scope": {
+          "Ref": "Scope"
+        },
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "192.0.2.100/32",
+          "192.0.2.200/32",
+          "192.0.2.0/28"
+        ],
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "ip-blocklist"
+          }
+        ]
+      }
+    },
+    "WebACL": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-ip-restriction-waf"
+        },
+        "Description": "IP 許可・ブロックリストに特化した WAF",
+        "Scope": {
+          "Ref": "Scope"
+        },
+        "DefaultAction": {
+          "Allow": {}
+        },
+        "Rules": [
+          {
+            "Name": "AllowListedIPs",
+            "Priority": 0,
+            "Statement": {
+              "OrStatement": {
+                "Statements": [
+                  {
+                    "IPSetReferenceStatement": {
+                      "Arn": {
+                        "Fn::GetAtt": [
+                          "AllowIpSet",
+                          "Arn"
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "IPSetReferenceStatement": {
+                      "Arn": {
+                        "Fn::GetAtt": [
+                          "AllowIpSetV6",
+                          "Arn"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "Action": {
+              "Allow": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}AllowListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "BlockListedIPs",
+            "Priority": 1,
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": [
+                    "BlockIpSet",
+                    "Arn"
+                  ]
+                }
+              }
+            },
+            "Action": {
+              "Block": {
+                "CustomResponse": {
+                  "ResponseCode": 403
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}BlockListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "RateLimit",
+            "Priority": 2,
+            "Statement": {
+              "RateBasedStatement": {
+                "Limit": 5000,
+                "AggregateKeyType": "IP",
+                "ScopeDownStatement": {
+                  "NotStatement": {
+                    "Statement": {
+                      "IPSetReferenceStatement": {
+                        "Arn": {
+                          "Fn::GetAtt": [
+                            "AllowIpSet",
+                            "Arn"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Action": {
+              "Block": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}RateLimit"
+              }
+            }
+          }
+        ],
+        "VisibilityConfig": {
+          "SampledRequestsEnabled": true,
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": {
+            "Fn::Sub": "${Environment}IpRestrictionWAF"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "ip-restriction"
+          }
+        ]
+      }
+    },
+    "WebACLAssociation": {
+      "Type": "AWS::WAFv2::WebACLAssociation",
+      "Condition": "HasAlbArn",
+      "Properties": {
+        "ResourceArn": {
+          "Ref": "AlbArn"
+        },
+        "WebACLArn": {
+          "Fn::GetAtt": [
+            "WebACL",
+            "Arn"
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "WebACLArn": {
+      "Description": "WAF Web ACL の ARN（CloudFront や他のリソースに紐付ける時に使用）",
+      "Value": {
+        "Fn::GetAtt": [
+          "WebACL",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebACLArn"
+        }
+      }
+    },
+    "WebACLId": {
+      "Description": "WAF Web ACL の ID",
+      "Value": {
+        "Fn::GetAtt": [
+          "WebACL",
+          "Id"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebACLId"
+        }
+      }
+    },
+    "AllowIpSetArn": {
+      "Description": "許可リスト IP セットの ARN（他スタックで参照する場合に使用）",
+      "Value": {
+        "Fn::GetAtt": [
+          "AllowIpSet",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-AllowIpSetArn"
+        }
+      }
+    },
+    "BlockIpSetArn": {
+      "Description": "ブロックリスト IP セットの ARN（他スタックで参照する場合に使用）",
+      "Value": {
+        "Fn::GetAtt": [
+          "BlockIpSet",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-BlockIpSetArn"
+        }
+      }
+    }
+  }
+}

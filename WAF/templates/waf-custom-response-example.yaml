@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  WAF カスタムレスポンス・デフォルトアクション サンプルテンプレート
+
+  このテンプレートは以下のパターンを例示することを目的にしている:
+    1. デフォルトアクション Allow（ブラックリスト方式）
+    2. デフォルトアクション Block（ホワイトリスト方式）
+    3. カスタムレスポンスボディ（JSON / HTML / テキスト）
+    4. カスタムレスポンスステータスコード（403 / 404 / 429）
+    5. カスタムレスポンスヘッダー（Retry-After 等）
+
+  注意: このテンプレートは学習用サンプルのため、ALB ARN は空デフォルトにしている
+
+Parameters:
+  Environment:
+    Type: String
+    Default: development
+    AllowedValues: [production, staging, development]
+
+  # ホワイトリスト方式にするか選べるようにする
+  DefaultActionType:
+    Type: String
+    Description: |
+      Allow: どのルールにも一致しないリクエストを許可（ブラックリスト方式・一般的）
+      Block: どのルールにも一致しないリクエストをブロック（ホワイトリスト方式・厳格）
+    AllowedValues:
+      - Allow
+      - Block
+    Default: Allow
+
+  AlbArn:
+    Type: String
+    Default: ""
+
+Conditions:
+  IsDefaultAllow: !Equals [!Ref DefaultActionType, Allow]
+  HasAlbArn: !Not [!Equals [!Ref AlbArn, ""]]
+
+Resources:
+
+  # ============================================================================
+  # IP セット
+  # ============================================================================
+  AllowIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-sample-allow-ip-set"
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses:
+        - "203.0.113.10/32"    # 管理者 PC（ダミー）
+        - "198.51.100.0/24"    # 社内 VPN（ダミー）
+
+  BlockIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-sample-block-ip-set"
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses:
+        - "192.0.2.100/32"     # 攻撃元 IP（ダミー）
+
+  # ============================================================================
+  # Web ACL
+  # ============================================================================
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${Environment}-custom-response-sample-waf"
+      Scope: REGIONAL
+
+      # --------------------------------------------------------------------------
+      # デフォルトアクション
+      # Parameters の DefaultActionType によって Allow / Block を切り替える
+      #
+      # 注意: DefaultAction の Block にはカスタムレスポンスを設定できない
+      #       （カスタムレスポンスはルールの Action にのみ設定可能）
+      # --------------------------------------------------------------------------
+      DefaultAction:
+        Fn::If:
+          - IsDefaultAllow
+          - Allow: {}    # ブラックリスト方式: 未一致リクエストを許可
+          - Block: {}    # ホワイトリスト方式: 未一致リクエストをブロック（カスタムレスポンス不可）
+
+      # --------------------------------------------------------------------------
+      # カスタムレスポンスボディの定義
+      # ここで定義したボディを各ルールの CustomResponseBodyKey から参照する
+      # ContentType は APPLICATION_JSON / TEXT_HTML / TEXT_PLAIN のいずれか
+      # --------------------------------------------------------------------------
+      CustomResponseBodies:
+
+        # JSON 形式のエラーレスポンス（API サーバー向け）
+        JsonForbidden:
+          ContentType: APPLICATION_JSON
+          Content: >-
+            {"error":"Forbidden","message":"Your IP address has been blocked.","code":403}
+
+        # レートリミット用 JSON レスポンス
+        JsonTooManyRequests:
+          ContentType: APPLICATION_JSON
+          Content: >-
+            {"error":"TooManyRequests","message":"Rate limit exceeded. Please retry after 60 seconds.","code":429}
+
+        # 管理画面ブロック用 HTML レスポンス（404 で存在を隠す）
+        HtmlNotFound:
+          ContentType: TEXT_HTML
+          Content: >-
+            <!DOCTYPE html><html><head><title>404 Not Found</title></head>
+            <body><h1>404 Not Found</h1><p>The requested URL was not found.</p></body></html>
+
+        # シンプルなテキストレスポンス
+        PlainForbidden:
+          ContentType: TEXT_PLAIN
+          Content: "403 Forbidden"
+
+      Rules:
+
+        # ======================================================================
+        # Priority 0: IP 許可リスト
+        # カスタムレスポンスは Allow アクションには設定できない（Block のみ）
+        # ======================================================================
+        - Name: AllowListedIPs
+          Priority: 0
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt AllowIpSet.Arn
+          Action:
+            Allow: {}    # Allow にカスタムレスポンスは設定不可
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}SampleAllowListedIPs"
+
+        # ======================================================================
+        # Priority 1: IP ブロックリスト → 403 + JSON カスタムレスポンス
+        # 最も一般的なカスタムレスポンスのパターン
+        # ======================================================================
+        - Name: BlockListedIPs
+          Priority: 1
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt BlockIpSet.Arn
+          Action:
+            Block:
+              CustomResponse:
+                # HTTP ステータスコードを指定（省略すると 403）
+                ResponseCode: 403
+                # CustomResponseBodies で定義したキーを指定してボディを返す
+                CustomResponseBodyKey: JsonForbidden
+                # 追加したいレスポンスヘッダーがあれば指定できる
+                ResponseHeaders:
+                  - Name: X-Block-Reason
+                    Value: "ip-blocklist"
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}SampleBlockListedIPs"
+
+        # ======================================================================
+        # Priority 2: 管理画面パスのブロック → 404（存在を隠すため）
+        # 403 だと「存在するが権限がない」とわかってしまうため、404 で隠す
+        # ======================================================================
+        - Name: HideAdminPaths
+          Priority: 2
+          Statement:
+            OrStatement:
+              Statements:
+                - ByteMatchStatement:
+                    FieldToMatch:
+                      UriPath: {}
+                    PositionalConstraint: STARTS_WITH
+                    SearchString: /admin
+                    TextTransformations:
+                      - Priority: 0
+                        Type: LOWERCASE
+                - ByteMatchStatement:
+                    FieldToMatch:
+                      UriPath: {}
+                    PositionalConstraint: STARTS_WITH
+                    SearchString: /wp-admin
+                    TextTransformations:
+                      - Priority: 0
+                        Type: LOWERCASE
+                - ByteMatchStatement:
+                    FieldToMatch:
+                      UriPath: {}
+                    PositionalConstraint: STARTS_WITH
+                    SearchString: /.env
+                    TextTransformations:
+                      - Priority: 0
+                        Type: LOWERCASE
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 404    # 存在を隠すために 403 ではなく 404 を返す
+                CustomResponseBodyKey: HtmlNotFound
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}SampleHideAdminPaths"
+
+        # ======================================================================
+        # Priority 3: レートリミット → 429 + Retry-After ヘッダー
+        # RFC 6585 に従い Too Many Requests (429) を返す
+        # ======================================================================
+        - Name: RateLimit
+          Priority: 3
+          Statement:
+            RateBasedStatement:
+              Limit: 5000
+              AggregateKeyType: IP
+              # 許可リスト IP はレートリミット対象外にする
+              ScopeDownStatement:
+                NotStatement:
+                  Statement:
+                    IPSetReferenceStatement:
+                      Arn: !GetAtt AllowIpSet.Arn
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 429    # Too Many Requests
+                CustomResponseBodyKey: JsonTooManyRequests
+                ResponseHeaders:
+                  # クライアントに何秒後に再試行すべきか伝える（RFC 7231 準拠）
+                  - Name: Retry-After
+                    Value: "60"
+                  - Name: X-Block-Reason
+                    Value: "rate-limit-exceeded"
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}SampleRateLimit"
+
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${Environment}CustomResponseSampleWAF"
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: custom-response-sample
+
+  # ============================================================================
+  # ALB へのアタッチ（AlbArn が指定されている場合のみ）
+  # ============================================================================
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: HasAlbArn
+    Properties:
+      ResourceArn: !Ref AlbArn
+      WebACLArn: !GetAtt WebACL.Arn
+
+Outputs:
+  WebACLArn:
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-WebACLArn"
+
+  DefaultActionNote:
+    Description: 現在のデフォルトアクション設定
+    Value: !Sub "DefaultAction is ${DefaultActionType} (${DefaultActionType} = ${DefaultActionType} mode)"

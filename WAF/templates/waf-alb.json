@@ -1,0 +1,548 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "ALB 用 WAF テンプレート（商用レベル・設定フル）\n\nALB と同じリージョンにデプロイすること（Scope=REGIONAL）。\n\n含まれるルール（Priority 昇順）:\n  0: IP 許可リスト（管理者 IP を最優先で ALLOW）\n  1: IP ブロックリスト（悪意ある IP を BLOCK）\n  2: AWS IP レピュテーションリスト（AWS 管理の悪意ある IP を BLOCK）\n  3: 匿名 IP リスト（Tor / VPN / プロキシを BLOCK）\n  4: コアルールセット（OWASP Top 10 対策）\n  5: 既知の悪意あるリクエスト（Log4Shell, SSRF 等を BLOCK）\n  6: SQL インジェクション対策\n  7: Linux コマンドインジェクション対策\n  8: レートリミット（5,000 req / 5分で BLOCK）\n  9: 管理画面保護（/admin, /wp-admin へのアクセスを管理者 IP 以外ブロック）\n",
+  "Parameters": {
+    "Environment": {
+      "Type": "String",
+      "Description": "環境名（リソース名や CloudWatch メトリクス名の prefix に使用）",
+      "AllowedValues": [
+        "production",
+        "staging",
+        "development"
+      ],
+      "Default": "production"
+    },
+    "AlbArn": {
+      "Type": "String",
+      "Description": "WAF をアタッチする ALB の ARN\n例: arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:loadbalancer/app/my-alb/abc123\n空文字の場合はアタッチしない（手動でアタッチすること）\n",
+      "Default": ""
+    },
+    "RateLimitThreshold": {
+      "Type": "Number",
+      "Description": "レートリミットのしきい値（5分間あたりのリクエスト数）\n同一 IP がこの数を超えるリクエストを送ってきた場合にブロックする\n推奨: 商用 5000、小規模 2000、高トラフィック 10000\n",
+      "Default": 5000,
+      "MinValue": 100,
+      "MaxValue": 20000000
+    },
+    "EnableXForwardedForEvaluation": {
+      "Type": "String",
+      "Description": "X-Forwarded-For ヘッダーで実クライアント IP を評価するか\nCloudFront → ALB 構成の場合は true を推奨\nALB が直接インターネットに公開されている場合は false\n",
+      "AllowedValues": [
+        "true",
+        "false"
+      ],
+      "Default": "false"
+    }
+  },
+  "Conditions": {
+    "HasAlbArn": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "AlbArn"
+            },
+            ""
+          ]
+        }
+      ]
+    }
+  },
+  "Resources": {
+    "AllowIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-alb-allow-ip-set"
+        },
+        "Description": "ALB WAF 許可リスト（管理者・社内 IP）",
+        "Scope": "REGIONAL",
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "203.0.113.10/32",
+          "198.51.100.0/24",
+          "203.0.113.100/32"
+        ],
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
+    "BlockIpSet": {
+      "Type": "AWS::WAFv2::IPSet",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-alb-block-ip-set"
+        },
+        "Description": "ALB WAF ブロックリスト（悪意ある IP）",
+        "Scope": "REGIONAL",
+        "IPAddressVersion": "IPV4",
+        "Addresses": [
+          "192.0.2.100/32",
+          "192.0.2.200/32",
+          "192.0.2.0/28"
+        ],
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          }
+        ]
+      }
+    },
+    "WebACL": {
+      "Type": "AWS::WAFv2::WebACL",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${Environment}-alb-waf"
+        },
+        "Description": "ALB 用 商用 WAF（フルセット）",
+        "Scope": "REGIONAL",
+        "DefaultAction": {
+          "Allow": {}
+        },
+        "CustomResponseBodies": {
+          "BlockedResponse": {
+            "ContentType": "APPLICATION_JSON",
+            "Content": "{\"error\":\"Access Denied\",\"message\":\"Your request has been blocked by WAF.\"}"
+          }
+        },
+        "Rules": [
+          {
+            "Name": "AllowListedIPs",
+            "Priority": 0,
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": [
+                    "AllowIpSet",
+                    "Arn"
+                  ]
+                }
+              }
+            },
+            "Action": {
+              "Allow": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBAllowListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "BlockListedIPs",
+            "Priority": 1,
+            "Statement": {
+              "IPSetReferenceStatement": {
+                "Arn": {
+                  "Fn::GetAtt": [
+                    "BlockIpSet",
+                    "Arn"
+                  ]
+                }
+              }
+            },
+            "Action": {
+              "Block": {
+                "CustomResponse": {
+                  "ResponseCode": 403,
+                  "CustomResponseBodyKey": "BlockedResponse"
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBBlockListedIPs"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesAmazonIpReputationList",
+            "Priority": 2,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesAmazonIpReputationList"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBIpReputationList"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesAnonymousIpList",
+            "Priority": 3,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesAnonymousIpList"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBAnonymousIpList"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesCommonRuleSet",
+            "Priority": 4,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesCommonRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBCommonRuleSet"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesKnownBadInputsRuleSet",
+            "Priority": 5,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesKnownBadInputsRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBKnownBadInputs"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesSQLiRuleSet",
+            "Priority": 6,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesSQLiRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBSQLiRuleSet"
+              }
+            }
+          },
+          {
+            "Name": "AWSManagedRulesLinuxRuleSet",
+            "Priority": 7,
+            "Statement": {
+              "ManagedRuleGroupStatement": {
+                "VendorName": "AWS",
+                "Name": "AWSManagedRulesLinuxRuleSet"
+              }
+            },
+            "OverrideAction": {
+              "None": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBLinuxRuleSet"
+              }
+            }
+          },
+          {
+            "Name": "RateLimit",
+            "Priority": 8,
+            "Statement": {
+              "RateBasedStatement": {
+                "Limit": {
+                  "Ref": "RateLimitThreshold"
+                },
+                "AggregateKeyType": "IP",
+                "ScopeDownStatement": {
+                  "NotStatement": {
+                    "Statement": {
+                      "IPSetReferenceStatement": {
+                        "Arn": {
+                          "Fn::GetAtt": [
+                            "AllowIpSet",
+                            "Arn"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Action": {
+              "Block": {}
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBRateLimit"
+              }
+            }
+          },
+          {
+            "Name": "ProtectAdminPaths",
+            "Priority": 9,
+            "Statement": {
+              "AndStatement": {
+                "Statements": [
+                  {
+                    "OrStatement": {
+                      "Statements": [
+                        {
+                          "ByteMatchStatement": {
+                            "FieldToMatch": {
+                              "UriPath": {}
+                            },
+                            "PositionalConstraint": "STARTS_WITH",
+                            "SearchString": "/admin",
+                            "TextTransformations": [
+                              {
+                                "Priority": 0,
+                                "Type": "LOWERCASE"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "ByteMatchStatement": {
+                            "FieldToMatch": {
+                              "UriPath": {}
+                            },
+                            "PositionalConstraint": "STARTS_WITH",
+                            "SearchString": "/wp-admin",
+                            "TextTransformations": [
+                              {
+                                "Priority": 0,
+                                "Type": "LOWERCASE"
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "ByteMatchStatement": {
+                            "FieldToMatch": {
+                              "UriPath": {}
+                            },
+                            "PositionalConstraint": "STARTS_WITH",
+                            "SearchString": "/dashboard",
+                            "TextTransformations": [
+                              {
+                                "Priority": 0,
+                                "Type": "LOWERCASE"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "NotStatement": {
+                      "Statement": {
+                        "IPSetReferenceStatement": {
+                          "Arn": {
+                            "Fn::GetAtt": [
+                              "AllowIpSet",
+                              "Arn"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "Action": {
+              "Block": {
+                "CustomResponse": {
+                  "ResponseCode": 403,
+                  "CustomResponseBodyKey": "BlockedResponse"
+                }
+              }
+            },
+            "VisibilityConfig": {
+              "SampledRequestsEnabled": true,
+              "CloudWatchMetricsEnabled": true,
+              "MetricName": {
+                "Fn::Sub": "${Environment}ALBProtectAdminPaths"
+              }
+            }
+          }
+        ],
+        "VisibilityConfig": {
+          "SampledRequestsEnabled": true,
+          "CloudWatchMetricsEnabled": true,
+          "MetricName": {
+            "Fn::Sub": "${Environment}ALBWAF"
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Environment",
+            "Value": {
+              "Ref": "Environment"
+            }
+          },
+          {
+            "Key": "Purpose",
+            "Value": "alb-waf"
+          }
+        ]
+      }
+    },
+    "WebACLAssociation": {
+      "Type": "AWS::WAFv2::WebACLAssociation",
+      "Condition": "HasAlbArn",
+      "Properties": {
+        "ResourceArn": {
+          "Ref": "AlbArn"
+        },
+        "WebACLArn": {
+          "Fn::GetAtt": [
+            "WebACL",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "BlockedRequestsAlarm": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmName": {
+          "Fn::Sub": "${Environment}-alb-waf-blocked-requests"
+        },
+        "AlarmDescription": "WAF によるブロックリクエスト数が急増した場合のアラーム",
+        "Namespace": "AWS/WAFV2",
+        "MetricName": "BlockedRequests",
+        "Dimensions": [
+          {
+            "Name": "WebACL",
+            "Value": {
+              "Ref": "WebACL"
+            }
+          },
+          {
+            "Name": "Rule",
+            "Value": "ALL"
+          },
+          {
+            "Name": "Region",
+            "Value": {
+              "Ref": "AWS::Region"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1000,
+        "ComparisonOperator": "GreaterThanThreshold",
+        "TreatMissingData": "notBreaching"
+      }
+    }
+  },
+  "Outputs": {
+    "WebACLArn": {
+      "Description": "WAF Web ACL の ARN（ALB へのアタッチや他スタックからの参照に使用）",
+      "Value": {
+        "Fn::GetAtt": [
+          "WebACL",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebACLArn"
+        }
+      }
+    },
+    "WebACLId": {
+      "Description": "WAF Web ACL の ID",
+      "Value": {
+        "Fn::GetAtt": [
+          "WebACL",
+          "Id"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-WebACLId"
+        }
+      }
+    },
+    "AllowIpSetArn": {
+      "Description": "許可リスト IP セットの ARN（管理者 IP の追加・変更時に参照）",
+      "Value": {
+        "Fn::GetAtt": [
+          "AllowIpSet",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-AllowIpSetArn"
+        }
+      }
+    },
+    "BlockIpSetArn": {
+      "Description": "ブロックリスト IP セットの ARN（ブロック IP の追加・変更時に参照）",
+      "Value": {
+        "Fn::GetAtt": [
+          "BlockIpSet",
+          "Arn"
+        ]
+      },
+      "Export": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-BlockIpSetArn"
+        }
+      }
+    }
+  }
+}
