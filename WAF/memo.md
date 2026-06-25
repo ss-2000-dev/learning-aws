@@ -20,10 +20,15 @@
 
 ## ドキュメント・テンプレート一覧
 
-- [README.md](./README.md) — WAF 概要・設定全般の詳細ドキュメント
+### ドキュメント
+- [README.md](./README.md) — WAF 概要・設定全般・CIDR 表記の解説
 - [ip-restriction.md](./ip-restriction.md) — IP 制限の解説と実装パターン
 - [cloudfront-setup.md](./cloudfront-setup.md) — WAF + CloudFront の設定手順
 - [alb-setup.md](./alb-setup.md) — WAF + ALB の設定手順
-- [templates/waf-cloudfront.yaml](./templates/waf-cloudfront.yaml) — CloudFront 用 WAF テンプレート（商用フルセット）
-- [templates/waf-alb.yaml](./templates/waf-alb.yaml) — ALB 用 WAF テンプレート（商用フルセット）
-- [templates/waf-ip-restriction.yaml](./templates/waf-ip-restriction.yaml) — IP 制限特化テンプレート
+- [default-action.md](./default-action.md) — デフォルトアクション・カスタムレスポンスの解説
+
+### CloudFormation テンプレート（YAML / JSON）
+- [templates/waf-cloudfront.yaml](./templates/waf-cloudfront.yaml) / [.json](./templates/waf-cloudfront.json) — CloudFront 用 WAF（商用フルセット）
+- [templates/waf-alb.yaml](./templates/waf-alb.yaml) / [.json](./templates/waf-alb.json) — ALB 用 WAF（商用フルセット）
+- [templates/waf-ip-restriction.yaml](./templates/waf-ip-restriction.yaml) / [.json](./templates/waf-ip-restriction.json) — IP 制限特化
+- [templates/waf-custom-response-example.yaml](./templates/waf-custom-response-example.yaml) / [.json](./templates/waf-custom-response-example.json) — カスタムレスポンスのサンプル
