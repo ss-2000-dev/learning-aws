@@ -1,0 +1,335 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  CloudFront 用 WAF テンプレート（商用レベル・設定フル）
+
+  【重要】このテンプレートは必ず us-east-1（バージニア北部）にデプロイすること。
+  CloudFront の WAF は Scope=CLOUDFRONT を使用しており、us-east-1 以外ではデプロイ不可。
+
+  含まれるルール（Priority 昇順）:
+    0: IP 許可リスト（管理者 IP を最優先で ALLOW）
+    1: IP ブロックリスト（悪意ある IP を BLOCK）
+    2: AWS IP レピュテーションリスト（AWS 管理の悪意ある IP を BLOCK）
+    3: 匿名 IP リスト（Tor / VPN / プロキシを BLOCK）
+    4: コアルールセット（OWASP Top 10 対策）
+    5: 既知の悪意あるリクエスト（Log4Shell, SSRF 等を BLOCK）
+    6: SQL インジェクション対策
+    7: Linux コマンドインジェクション対策
+    8: レートリミット（5,000 req / 5分で BLOCK）
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  Environment:
+    Type: String
+    Description: 環境名（リソース名や CloudWatch メトリクス名の prefix に使用）
+    AllowedValues:
+      - production
+      - staging
+      - development
+    Default: production
+
+  RateLimitThreshold:
+    Type: Number
+    Description: |
+      レートリミットのしきい値（5分間あたりのリクエスト数）
+      同一 IP がこの数を超えるリクエストを送ってきた場合にブロックする
+      推奨: 商用 5000、小規模 2000、高トラフィック 10000
+    Default: 5000
+    MinValue: 100
+    MaxValue: 20000000
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ============================================================================
+  # IP セット定義
+  # ============================================================================
+
+  # 許可リスト IP セット（IPv4）
+  # 管理者・社内 VPN・CI/CD サーバーなど信頼できる IP を登録する
+  # ここに登録された IP は全ルールより優先して ALLOW される
+  AllowIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-cf-allow-ip-set"
+      Description: CloudFront WAF 許可リスト（管理者・社内 IP）
+      # CloudFront 用は必ず CLOUDFRONT を指定（REGIONAL にすると CloudFront に紐付けられない）
+      Scope: CLOUDFRONT
+      IPAddressVersion: IPV4
+      Addresses:
+        # ここに許可したい IP を CIDR 形式で記載する
+        # 以下はすべてダミー IP（RFC 5737 ドキュメント用アドレス）
+        - "203.0.113.10/32"    # 管理者 PC（ダミー）
+        - "198.51.100.0/24"    # 社内 VPN サブネット（ダミー）
+        - "203.0.113.100/32"   # CI/CD サーバー（ダミー）
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ブロックリスト IP セット（IPv4）
+  # 攻撃元として確認された IP・競合他社 IP・不審なクローラーなどを登録する
+  BlockIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-cf-block-ip-set"
+      Description: CloudFront WAF ブロックリスト（悪意ある IP）
+      Scope: CLOUDFRONT
+      IPAddressVersion: IPV4
+      Addresses:
+        # ここにブロックしたい IP を CIDR 形式で記載する
+        # 以下はすべてダミー IP（RFC 5737 ドキュメント用アドレス）
+        - "192.0.2.100/32"     # 攻撃元 IP 1（ダミー）
+        - "192.0.2.200/32"     # 攻撃元 IP 2（ダミー）
+        - "192.0.2.0/28"       # 攻撃元サブネット（ダミー）
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ============================================================================
+  # Web ACL（CloudFront 用）
+  # ============================================================================
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${Environment}-cloudfront-waf"
+      Description: CloudFront 用 商用 WAF（フルセット）
+      # CloudFront 用は必ず CLOUDFRONT を指定
+      Scope: CLOUDFRONT
+
+      # デフォルトアクション: どのルールにも一致しないリクエストは許可する
+      # （ブラックリスト方式。ホワイトリスト方式にする場合は Block に変更）
+      DefaultAction:
+        Allow: {}
+
+      Rules:
+
+        # ======================================================================
+        # Priority 0: IP 許可リスト（最優先）
+        # 管理者 IP を最初に評価して ALLOW することで、後続の BLOCK ルールや
+        # マネージドルールによる誤検知を回避する
+        # ======================================================================
+        - Name: AllowListedIPs
+          Priority: 0
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt AllowIpSet.Arn
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFAllowListedIPs"
+
+        # ======================================================================
+        # Priority 1: IP ブロックリスト
+        # 攻撃元として特定した IP をブロックする
+        # ======================================================================
+        - Name: BlockListedIPs
+          Priority: 1
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt BlockIpSet.Arn
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 403
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFBlockListedIPs"
+
+        # ======================================================================
+        # Priority 2: AWS IP レピュテーションリスト
+        # AWS がボット・マルウェア・スキャナーなどの悪意ある IP を管理するリスト
+        # 自動的に更新されるためメンテナンス不要
+        # ======================================================================
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+              # ExcludedRules: 特定のルールだけ除外したい場合はここに記載
+              # ExcludedRules:
+              #   - Name: AWSManagedIPReputationList
+          # None: マネージドルールのアクション（BLOCK 等）をそのまま使う
+          # Count に変更するとブロックせずカウントのみになる（テスト時に便利）
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFIpReputationList"
+
+        # ======================================================================
+        # Priority 3: 匿名 IP リスト
+        # Tor ノード・VPN サービス・ホスティングプロバイダー・プロキシなど、
+        # 身元を隠すための匿名化サービスからのアクセスをブロックする
+        # 注意: 正規ユーザーが VPN を使っている場合もブロックされる可能性があるため、
+        # トラフィックを確認してから運用すること
+        # ======================================================================
+        - Name: AWSManagedRulesAnonymousIpList
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAnonymousIpList
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFAnonymousIpList"
+
+        # ======================================================================
+        # Priority 4: コアルールセット（OWASP Top 10 対策）
+        # XSS・LFI（ローカルファイルインクルード）・RFI（リモートファイルインクルード）・
+        # パストラバーサル・HTTP プロトコル違反などを検出・ブロックする
+        # WCU: 700
+        # ======================================================================
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 4
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              # 一部のルールで誤検知が発生する場合は ExcludedRules で個別に除外できる
+              # 例: EC2MetaDataSSRF_BODY は本文に AWS メタデータ URL が含まれる場合に誤検知することがある
+              # ExcludedRules:
+              #   - Name: EC2MetaDataSSRF_BODY
+              #   - Name: GenericRFI_BODY
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFCommonRuleSet"
+
+        # ======================================================================
+        # Priority 5: 既知の悪意あるリクエスト
+        # Log4Shell（CVE-2021-44228）・Spring4Shell（CVE-2022-22965）・
+        # SSRF（サーバーサイドリクエストフォージェリ）などの既知の攻撃パターンをブロック
+        # WCU: 200
+        # ======================================================================
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 5
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFKnownBadInputs"
+
+        # ======================================================================
+        # Priority 6: SQL インジェクション対策
+        # クエリパラメータ・リクエストボディ・Cookie・URI などに含まれる
+        # SQL インジェクション攻撃パターンを検出・ブロックする
+        # （Common Rule Set にも SQL インジェクション検出は含まれるが、
+        #   このルールセットはより広範な SQL インジェクション攻撃に特化している）
+        # WCU: 200
+        # ======================================================================
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 6
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFSQLiRuleSet"
+
+        # ======================================================================
+        # Priority 7: Linux コマンドインジェクション対策
+        # Linux OS のコマンドインジェクション攻撃パターンを検出・ブロックする
+        # EC2・ECS・Lambda などで Linux を使っている場合に有効
+        # WCU: 200
+        # ======================================================================
+        - Name: AWSManagedRulesLinuxRuleSet
+          Priority: 7
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesLinuxRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFLinuxRuleSet"
+
+        # ======================================================================
+        # Priority 8: レートリミット（DDoS・ブルートフォース対策）
+        # 同一 IP から 5分間で RateLimitThreshold 件を超えるリクエストが来た場合にブロック
+        # 許可リスト IP はレートリミット対象外にしている（ScopeDownStatement）
+        # ======================================================================
+        - Name: RateLimit
+          Priority: 8
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimitThreshold
+              AggregateKeyType: IP
+              # ScopeDownStatement: 許可リスト IP はレートリミット対象外にする
+              # （監視ツールや負荷試験ツールがブロックされるのを防ぐ）
+              ScopeDownStatement:
+                NotStatement:
+                  Statement:
+                    IPSetReferenceStatement:
+                      Arn: !GetAtt AllowIpSet.Arn
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}CFRateLimit"
+
+      # Web ACL 全体の可視性設定
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${Environment}CloudFrontWAF"
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: cloudfront-waf
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  WebACLArn:
+    Description: |
+      WAF Web ACL の ARN
+      CloudFront ディストリビューションの WebACLId にこの ARN を設定してアタッチする
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-WebACLArn"
+
+  WebACLId:
+    Description: WAF Web ACL の ID
+    Value: !GetAtt WebACL.Id
+    Export:
+      Name: !Sub "${AWS::StackName}-WebACLId"
+
+  AllowIpSetArn:
+    Description: 許可リスト IP セットの ARN（IP の追加・変更時に参照）
+    Value: !GetAtt AllowIpSet.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-AllowIpSetArn"
+
+  BlockIpSetArn:
+    Description: ブロックリスト IP セットの ARN（IP の追加・変更時に参照）
+    Value: !GetAtt BlockIpSet.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-BlockIpSetArn"

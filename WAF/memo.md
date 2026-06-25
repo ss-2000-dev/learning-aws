@@ -17,3 +17,13 @@
   - COUNT：リクエストがあったことをカウントするだけで、アクションは実施しない
   - CAPTCHA, Challenge：ボットかどうか判定
 - AWS マネージドルールグループ：あらかじめ用意してくれているルール
+
+## ドキュメント・テンプレート一覧
+
+- [README.md](./README.md) — WAF 概要・設定全般の詳細ドキュメント
+- [ip-restriction.md](./ip-restriction.md) — IP 制限の解説と実装パターン
+- [cloudfront-setup.md](./cloudfront-setup.md) — WAF + CloudFront の設定手順
+- [alb-setup.md](./alb-setup.md) — WAF + ALB の設定手順
+- [templates/waf-cloudfront.yaml](./templates/waf-cloudfront.yaml) — CloudFront 用 WAF テンプレート（商用フルセット）
+- [templates/waf-alb.yaml](./templates/waf-alb.yaml) — ALB 用 WAF テンプレート（商用フルセット）
+- [templates/waf-ip-restriction.yaml](./templates/waf-ip-restriction.yaml) — IP 制限特化テンプレート

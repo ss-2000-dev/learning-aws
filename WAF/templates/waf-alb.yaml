@@ -1,0 +1,443 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  ALB 用 WAF テンプレート（商用レベル・設定フル）
+
+  ALB と同じリージョンにデプロイすること（Scope=REGIONAL）。
+
+  含まれるルール（Priority 昇順）:
+    0: IP 許可リスト（管理者 IP を最優先で ALLOW）
+    1: IP ブロックリスト（悪意ある IP を BLOCK）
+    2: AWS IP レピュテーションリスト（AWS 管理の悪意ある IP を BLOCK）
+    3: 匿名 IP リスト（Tor / VPN / プロキシを BLOCK）
+    4: コアルールセット（OWASP Top 10 対策）
+    5: 既知の悪意あるリクエスト（Log4Shell, SSRF 等を BLOCK）
+    6: SQL インジェクション対策
+    7: Linux コマンドインジェクション対策
+    8: レートリミット（5,000 req / 5分で BLOCK）
+    9: 管理画面保護（/admin, /wp-admin へのアクセスを管理者 IP 以外ブロック）
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  Environment:
+    Type: String
+    Description: 環境名（リソース名や CloudWatch メトリクス名の prefix に使用）
+    AllowedValues:
+      - production
+      - staging
+      - development
+    Default: production
+
+  AlbArn:
+    Type: String
+    Description: |
+      WAF をアタッチする ALB の ARN
+      例: arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:loadbalancer/app/my-alb/abc123
+      空文字の場合はアタッチしない（手動でアタッチすること）
+    Default: ""
+
+  RateLimitThreshold:
+    Type: Number
+    Description: |
+      レートリミットのしきい値（5分間あたりのリクエスト数）
+      同一 IP がこの数を超えるリクエストを送ってきた場合にブロックする
+      推奨: 商用 5000、小規模 2000、高トラフィック 10000
+    Default: 5000
+    MinValue: 100
+    MaxValue: 20000000
+
+  # CloudFront 経由のリクエストの場合、クライアントの実際の IP は
+  # X-Forwarded-For ヘッダーに格納される。この設定を true にすると
+  # XFF ヘッダーから実クライアント IP を取得して IP ルールを評価する
+  EnableXForwardedForEvaluation:
+    Type: String
+    Description: |
+      X-Forwarded-For ヘッダーで実クライアント IP を評価するか
+      CloudFront → ALB 構成の場合は true を推奨
+      ALB が直接インターネットに公開されている場合は false
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+# ==============================================================================
+# Conditions
+# ==============================================================================
+Conditions:
+  HasAlbArn: !Not [!Equals [!Ref AlbArn, ""]]
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ============================================================================
+  # IP セット定義
+  # ============================================================================
+
+  # 許可リスト IP セット（IPv4）
+  AllowIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-alb-allow-ip-set"
+      Description: ALB WAF 許可リスト（管理者・社内 IP）
+      # ALB 用は必ず REGIONAL を指定
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses:
+        # ここに許可したい IP を CIDR 形式で記載する
+        # 以下はすべてダミー IP（RFC 5737 ドキュメント用アドレス）
+        - "203.0.113.10/32"    # 管理者 PC（ダミー）
+        - "198.51.100.0/24"    # 社内 VPN サブネット（ダミー）
+        - "203.0.113.100/32"   # CI/CD サーバー（ダミー）
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ブロックリスト IP セット（IPv4）
+  BlockIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-alb-block-ip-set"
+      Description: ALB WAF ブロックリスト（悪意ある IP）
+      Scope: REGIONAL
+      IPAddressVersion: IPV4
+      Addresses:
+        # ここにブロックしたい IP を CIDR 形式で記載する
+        # 以下はすべてダミー IP（RFC 5737 ドキュメント用アドレス）
+        - "192.0.2.100/32"     # 攻撃元 IP 1（ダミー）
+        - "192.0.2.200/32"     # 攻撃元 IP 2（ダミー）
+        - "192.0.2.0/28"       # 攻撃元サブネット（ダミー）
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ============================================================================
+  # Web ACL（ALB 用）
+  # ============================================================================
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${Environment}-alb-waf"
+      Description: ALB 用 商用 WAF（フルセット）
+      # ALB 用は必ず REGIONAL を指定
+      Scope: REGIONAL
+
+      # デフォルトアクション: どのルールにも一致しないリクエストは許可する
+      DefaultAction:
+        Allow: {}
+
+      # カスタムレスポンスボディの定義（ブロック時に返すカスタムレスポンスを定義する）
+      CustomResponseBodies:
+        BlockedResponse:
+          ContentType: APPLICATION_JSON
+          Content: '{"error":"Access Denied","message":"Your request has been blocked by WAF."}'
+
+      Rules:
+
+        # ======================================================================
+        # Priority 0: IP 許可リスト（最優先）
+        # 管理者 IP を最初に評価して ALLOW することで、後続の BLOCK ルールや
+        # マネージドルールによる誤検知を回避する
+        # ======================================================================
+        - Name: AllowListedIPs
+          Priority: 0
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt AllowIpSet.Arn
+              # CloudFront → ALB 構成の場合は X-Forwarded-For から実クライアント IP を取得する
+              # EnableXForwardedForEvaluation が true の場合に有効化する
+              # IPSetForwardedIPConfig:
+              #   HeaderName: X-Forwarded-For
+              #   FallbackBehavior: NO_MATCH
+              #   Position: FIRST
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBAllowListedIPs"
+
+        # ======================================================================
+        # Priority 1: IP ブロックリスト
+        # ======================================================================
+        - Name: BlockListedIPs
+          Priority: 1
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt BlockIpSet.Arn
+          Action:
+            Block:
+              # CustomResponseBodyKey で定義したカスタムレスポンスを返す
+              CustomResponse:
+                ResponseCode: 403
+                CustomResponseBodyKey: BlockedResponse
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBBlockListedIPs"
+
+        # ======================================================================
+        # Priority 2: AWS IP レピュテーションリスト
+        # ======================================================================
+        - Name: AWSManagedRulesAmazonIpReputationList
+          Priority: 2
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBIpReputationList"
+
+        # ======================================================================
+        # Priority 3: 匿名 IP リスト（Tor / VPN / プロキシ）
+        # ======================================================================
+        - Name: AWSManagedRulesAnonymousIpList
+          Priority: 3
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAnonymousIpList
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBAnonymousIpList"
+
+        # ======================================================================
+        # Priority 4: コアルールセット（OWASP Top 10 対策）
+        # XSS・LFI・RFI・パストラバーサル・HTTP プロトコル違反などを検出
+        # WCU: 700
+        # ======================================================================
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 4
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              # SizeRestrictions_BODY: リクエストボディのサイズ制限
+              # ファイルアップロード機能がある場合は誤検知する可能性があるため除外を検討
+              # ExcludedRules:
+              #   - Name: SizeRestrictions_BODY
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBCommonRuleSet"
+
+        # ======================================================================
+        # Priority 5: 既知の悪意あるリクエスト
+        # Log4Shell（CVE-2021-44228）・Spring4Shell（CVE-2022-22965）・SSRF 等
+        # WCU: 200
+        # ======================================================================
+        - Name: AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 5
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBKnownBadInputs"
+
+        # ======================================================================
+        # Priority 6: SQL インジェクション対策
+        # クエリパラメータ・ボディ・Cookie・URI に含まれる SQL インジェクション攻撃を検出
+        # WCU: 200
+        # ======================================================================
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 6
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBSQLiRuleSet"
+
+        # ======================================================================
+        # Priority 7: Linux コマンドインジェクション対策
+        # WCU: 200
+        # ======================================================================
+        - Name: AWSManagedRulesLinuxRuleSet
+          Priority: 7
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesLinuxRuleSet
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBLinuxRuleSet"
+
+        # ======================================================================
+        # Priority 8: レートリミット（DDoS・ブルートフォース対策）
+        # 同一 IP から 5分間で RateLimitThreshold 件を超えるリクエストが来た場合にブロック
+        # 許可リスト IP はレートリミット対象外（ScopeDownStatement + NotStatement）
+        # ======================================================================
+        - Name: RateLimit
+          Priority: 8
+          Statement:
+            RateBasedStatement:
+              Limit: !Ref RateLimitThreshold
+              # IP アドレス単位でリクエスト数を集計する
+              AggregateKeyType: IP
+              # 許可リスト IP（管理者・監視ツール）はレートリミット対象外にする
+              ScopeDownStatement:
+                NotStatement:
+                  Statement:
+                    IPSetReferenceStatement:
+                      Arn: !GetAtt AllowIpSet.Arn
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBRateLimit"
+
+        # ======================================================================
+        # Priority 9: 管理画面保護
+        # /admin, /wp-admin, /dashboard などの管理パスへのアクセスを
+        # 許可リスト IP 以外からすべてブロックする
+        # ======================================================================
+        - Name: ProtectAdminPaths
+          Priority: 9
+          Statement:
+            # AND 条件: 管理パスへのアクセス かつ 許可リスト以外の IP
+            AndStatement:
+              Statements:
+                # 管理パスへのアクセスかチェック（いずれかのパスにマッチ）
+                - OrStatement:
+                    Statements:
+                      - ByteMatchStatement:
+                          FieldToMatch:
+                            UriPath: {}
+                          PositionalConstraint: STARTS_WITH
+                          SearchString: /admin
+                          TextTransformations:
+                            - Priority: 0
+                              Type: LOWERCASE
+                      - ByteMatchStatement:
+                          FieldToMatch:
+                            UriPath: {}
+                          PositionalConstraint: STARTS_WITH
+                          SearchString: /wp-admin
+                          TextTransformations:
+                            - Priority: 0
+                              Type: LOWERCASE
+                      - ByteMatchStatement:
+                          FieldToMatch:
+                            UriPath: {}
+                          PositionalConstraint: STARTS_WITH
+                          SearchString: /dashboard
+                          TextTransformations:
+                            - Priority: 0
+                              Type: LOWERCASE
+                # 許可リスト IP 以外からのアクセスかチェック（NOT 条件）
+                - NotStatement:
+                    Statement:
+                      IPSetReferenceStatement:
+                        Arn: !GetAtt AllowIpSet.Arn
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 403
+                CustomResponseBodyKey: BlockedResponse
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}ALBProtectAdminPaths"
+
+      # Web ACL 全体の可視性設定
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${Environment}ALBWAF"
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: alb-waf
+
+  # ============================================================================
+  # WAF を ALB にアタッチ（AlbArn が指定されている場合のみ作成）
+  # ============================================================================
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: HasAlbArn
+    Properties:
+      # アタッチ先の ALB ARN
+      ResourceArn: !Ref AlbArn
+      # 作成した Web ACL を紐付ける
+      WebACLArn: !GetAtt WebACL.Arn
+
+  # ============================================================================
+  # CloudWatch アラーム: ブロック数の急増を検知
+  # WAF がリクエストをブロックしたとき、急増した場合にアラームを飛ばす
+  # ============================================================================
+  BlockedRequestsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${Environment}-alb-waf-blocked-requests"
+      AlarmDescription: WAF によるブロックリクエスト数が急増した場合のアラーム
+      # WAF のメトリクスは us-east-1 ではなくリソースのリージョンに出力される
+      Namespace: AWS/WAFV2
+      MetricName: BlockedRequests
+      Dimensions:
+        - Name: WebACL
+          Value: !Ref WebACL
+        - Name: Rule
+          Value: ALL
+        - Name: Region
+          Value: !Ref AWS::Region
+      # 5分間のブロック数が 1000 件を超えたらアラーム（閾値は要調整）
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1000
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  WebACLArn:
+    Description: WAF Web ACL の ARN（ALB へのアタッチや他スタックからの参照に使用）
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-WebACLArn"
+
+  WebACLId:
+    Description: WAF Web ACL の ID
+    Value: !GetAtt WebACL.Id
+    Export:
+      Name: !Sub "${AWS::StackName}-WebACLId"
+
+  AllowIpSetArn:
+    Description: 許可リスト IP セットの ARN（管理者 IP の追加・変更時に参照）
+    Value: !GetAtt AllowIpSet.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-AllowIpSetArn"
+
+  BlockIpSetArn:
+    Description: ブロックリスト IP セットの ARN（ブロック IP の追加・変更時に参照）
+    Value: !GetAtt BlockIpSet.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-BlockIpSetArn"

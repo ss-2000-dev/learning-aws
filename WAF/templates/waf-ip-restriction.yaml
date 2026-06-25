@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  WAF IP 制限特化テンプレート
+  - IP 許可リスト（管理者・社内 IP のみ許可）
+  - IP ブロックリスト（悪意ある IP をブロック）
+  - ALB または CloudFront に紐付け可能
+  注意: CloudFront に使う場合は us-east-1 でデプロイすること
+
+# ==============================================================================
+# Parameters: デプロイ時に指定する変数
+# ==============================================================================
+Parameters:
+  Environment:
+    Type: String
+    Description: 環境名（ログやメトリクス名の prefix に使用）
+    AllowedValues:
+      - production
+      - staging
+      - development
+    Default: production
+
+  Scope:
+    Type: String
+    Description: |
+      WAF のスコープ
+      CLOUDFRONT: CloudFront 用（us-east-1 でのデプロイ必須）
+      REGIONAL: ALB / API Gateway 用（ALB と同じリージョンでデプロイ）
+    AllowedValues:
+      - CLOUDFRONT
+      - REGIONAL
+    Default: REGIONAL
+
+  # ALB の ARN を指定する場合のみ WAF が自動的にアタッチされる
+  # 空文字の場合はアタッチしないので手動でアタッチすること
+  AlbArn:
+    Type: String
+    Description: |
+      WAF をアタッチする ALB の ARN
+      例: arn:aws:elasticloadbalancing:ap-northeast-1:123456789012:loadbalancer/app/my-alb/abc123
+      空文字の場合はアタッチしない（Scope が CLOUDFRONT の場合は空にする）
+    Default: ""
+
+# ==============================================================================
+# Conditions: 条件分岐
+# ==============================================================================
+Conditions:
+  # ALB ARN が指定されている場合のみ WebACLAssociation リソースを作成する
+  HasAlbArn: !Not [!Equals [!Ref AlbArn, ""]]
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ============================================================================
+  # IP セット定義
+  # ============================================================================
+
+  # 許可リスト IP セット
+  # 管理者・社内ネットワーク・VPN など、必ず通したい IP をここに登録する
+  AllowIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-allow-ip-set"
+      Description: 管理者・社内 IP の許可リスト
+      Scope: !Ref Scope
+      IPAddressVersion: IPV4
+      Addresses:
+        # ここにホワイトリスト IP を記載する（CIDR 形式）
+        # 以下はダミー IP（RFC 5737 ドキュメント用アドレス）
+        - "203.0.113.10/32"    # 管理者 PC（ダミー）
+        - "198.51.100.0/24"    # 社内 VPN サブネット（ダミー）
+        - "203.0.113.100/32"   # CI/CD サーバー（ダミー）
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: ip-allowlist
+
+  # 許可リスト IP セット（IPv6 版）
+  AllowIpSetV6:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-allow-ip-set-v6"
+      Description: 管理者・社内 IP の許可リスト（IPv6）
+      Scope: !Ref Scope
+      IPAddressVersion: IPV6
+      Addresses:
+        # IPv6 のホワイトリスト IP をここに記載する
+        # 以下はダミー IP（RFC 3849 ドキュメント用アドレス）
+        - "2001:db8::/32"      # 社内 IPv6 サブネット（ダミー）
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: ip-allowlist-v6
+
+  # ブロックリスト IP セット
+  # 攻撃元・スパム送信者・不審なクローラーなど、ブロックしたい IP をここに登録する
+  BlockIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: !Sub "${Environment}-block-ip-set"
+      Description: 悪意ある IP・攻撃元 IP のブロックリスト
+      Scope: !Ref Scope
+      IPAddressVersion: IPV4
+      Addresses:
+        # ここにブロックリスト IP を記載する（CIDR 形式）
+        # 以下はダミー IP（RFC 5737 ドキュメント用アドレス）
+        - "192.0.2.100/32"     # 攻撃元 IP 1（ダミー）
+        - "192.0.2.200/32"     # 攻撃元 IP 2（ダミー）
+        - "192.0.2.0/28"       # 攻撃元 IP サブネット（ダミー）
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: ip-blocklist
+
+  # ============================================================================
+  # Web ACL 定義
+  # ============================================================================
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub "${Environment}-ip-restriction-waf"
+      Description: IP 許可・ブロックリストに特化した WAF
+      Scope: !Ref Scope
+
+      # デフォルトアクション: ルールに一致しないリクエストはすべて許可
+      # 許可リスト運用の場合は Block に変更する
+      DefaultAction:
+        Allow: {}
+
+      Rules:
+
+        # ========== Priority 0: IP 許可リスト（最優先で評価） ==========
+        # 管理者 IP を最初に評価して ALLOW することで、後続の BLOCK ルールに引っかからないようにする
+        - Name: AllowListedIPs
+          Priority: 0
+          Statement:
+            OrStatement:
+              Statements:
+                # IPv4 許可リスト
+                - IPSetReferenceStatement:
+                    Arn: !GetAtt AllowIpSet.Arn
+                # IPv6 許可リスト
+                - IPSetReferenceStatement:
+                    Arn: !GetAtt AllowIpSetV6.Arn
+          Action:
+            Allow: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}AllowListedIPs"
+
+        # ========== Priority 1: IP ブロックリスト ==========
+        # ブロックリストの IP からのリクエストを 403 でブロックする
+        - Name: BlockListedIPs
+          Priority: 1
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt BlockIpSet.Arn
+          Action:
+            Block:
+              # ブロック時のカスタムレスポンス（オプション）
+              # デフォルトは 403 Forbidden
+              CustomResponse:
+                ResponseCode: 403
+                # カスタムレスポンスボディを返したい場合は CustomResponseBodyKey を追加する
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}BlockListedIPs"
+
+        # ========== Priority 2: レートリミット ==========
+        # 同一 IP から大量リクエストが来た場合にブロックする（DDoS・ブルートフォース対策）
+        # Limit は 5分間（300秒）あたりのリクエスト数
+        - Name: RateLimit
+          Priority: 2
+          Statement:
+            RateBasedStatement:
+              Limit: 5000              # 5分間のリクエスト上限
+              AggregateKeyType: IP    # IP アドレス単位で集計
+              # ScopeDownStatement: 許可リスト IP はレートリミット対象外にする
+              ScopeDownStatement:
+                NotStatement:
+                  Statement:
+                    IPSetReferenceStatement:
+                      Arn: !GetAtt AllowIpSet.Arn
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub "${Environment}RateLimit"
+
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub "${Environment}IpRestrictionWAF"
+
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: ip-restriction
+
+  # ============================================================================
+  # WAF を ALB にアタッチ（AlbArn が指定されている場合のみ）
+  # ============================================================================
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: HasAlbArn
+    Properties:
+      ResourceArn: !Ref AlbArn
+      WebACLArn: !GetAtt WebACL.Arn
+
+# ==============================================================================
+# Outputs: 他のスタックや CLI から参照するための出力値
+# ==============================================================================
+Outputs:
+  WebACLArn:
+    Description: WAF Web ACL の ARN（CloudFront や他のリソースに紐付ける時に使用）
+    Value: !GetAtt WebACL.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-WebACLArn"
+
+  WebACLId:
+    Description: WAF Web ACL の ID
+    Value: !GetAtt WebACL.Id
+    Export:
+      Name: !Sub "${AWS::StackName}-WebACLId"
+
+  AllowIpSetArn:
+    Description: 許可リスト IP セットの ARN（他スタックで参照する場合に使用）
+    Value: !GetAtt AllowIpSet.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-AllowIpSetArn"
+
+  BlockIpSetArn:
+    Description: ブロックリスト IP セットの ARN（他スタックで参照する場合に使用）
+    Value: !GetAtt BlockIpSet.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-BlockIpSetArn"
