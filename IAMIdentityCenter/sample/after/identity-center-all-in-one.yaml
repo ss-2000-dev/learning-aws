@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [移行後・統合版／テスト用] Identity Center の Group / Permission Set / Account Assignment
+  を1つのテンプレートにまとめたサンプル。
+
+  同一スタック内であれば Group ID や Permission Set ARN は Outputs 経由の
+  Fn::ImportValue を使わずに !GetAtt / !Ref で直接参照できるため、
+  identity-center-groups.yaml / identity-center-permission-sets.yaml /
+  identity-center-assignments.yaml の3ファイルは1つにまとめることが可能。
+  依存関係（Group・PermissionSet が先に作成されてから Assignment が作られる順序）も
+  CloudFormation が !GetAtt / !Ref から自動的に解決する。
+
+  既存の3分割ファイルは残したままにしており、本ファイルは
+  「1ファイルにまとめる場合の例」として追加したもの。
+  リソース名は既存ファイルに合わせてテスト用であることがわかる Test サフィックスを付けている。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  IdentityStoreId:
+    Type: String
+    Description: |
+      Identity Store ID
+      `aws sso-admin list-instances` で取得できる（例: d-9067123abc）
+
+  SsoInstanceArn:
+    Type: String
+    Description: |
+      IAM Identity Center インスタンスの ARN
+      `aws sso-admin list-instances` で取得できる（例: arn:aws:sso:::instance/ssoins-8a2b7c6d5e4f3210）
+
+  TargetAccountId:
+    Type: String
+    Description: |
+      権限を割り当てる対象の AWS アカウント ID
+      管理するアカウントは 1 つのみのため、常に同じ値を指定する（例: 111122223333）
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ----------------------------------------------------------------------------
+  # Group
+  # ----------------------------------------------------------------------------
+  DevelopersGroup:
+    Type: AWS::IdentityStore::Group
+    Properties:
+      IdentityStoreId: !Ref IdentityStoreId
+      DisplayName: DeveloperTestGroup
+      Description: アプリケーション開発チーム（旧 IAM グループ Developers を移行・テスト用）
+
+  InfraGroup:
+    Type: AWS::IdentityStore::Group
+    Properties:
+      IdentityStoreId: !Ref IdentityStoreId
+      DisplayName: InfraTestGroup
+      Description: インフラ運用チーム（旧 IAM グループ Infra を移行・テスト用）
+
+  # ----------------------------------------------------------------------------
+  # Permission Set
+  # ----------------------------------------------------------------------------
+  DevelopersPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: DevAccessTestPermissionSet
+      Description: "For Developers Team PermissionSet" #  開発者向け権限（旧 IAM グループ Developers / PowerUserAccess を移行・テスト用）
+      InstanceArn: !Ref SsoInstanceArn
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+
+  InfraPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: InfraAccessTestPermissionSet
+      Description: "For Infra Ope Team PermissionSet" # インフラ運用チーム向け権限（旧 IAM グループ Infra のカスタムポリシーを移行・テスト用）
+      InstanceArn: !Ref SsoInstanceArn
+      InlinePolicy: >
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "InfraResourceAccess",
+              "Effect": "Allow",
+              "Action": [
+                "ec2:*",
+                "elasticloadbalancing:*",
+                "autoscaling:*",
+                "cloudformation:*",
+                "rds:Describe*",
+                "rds:List*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyIamAndOrganizations",
+              "Effect": "Deny",
+              "Action": [
+                "iam:*",
+                "organizations:*"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+
+  # ----------------------------------------------------------------------------
+  # Account Assignment
+  # 同一スタック内なので Outputs / Fn::ImportValue を介さず Group・PermissionSet を直接参照する
+  # ----------------------------------------------------------------------------
+  DevelopersAssignment:
+    Type: AWS::SSO::Assignment
+    Properties:
+      InstanceArn: !Ref SsoInstanceArn
+      PermissionSetArn: !GetAtt DevelopersPermissionSet.PermissionSetArn
+      PrincipalId: !GetAtt DevelopersGroup.GroupId
+      PrincipalType: GROUP
+      TargetId: !Ref TargetAccountId
+      TargetType: AWS_ACCOUNT
+
+  InfraAssignment:
+    Type: AWS::SSO::Assignment
+    Properties:
+      InstanceArn: !Ref SsoInstanceArn
+      PermissionSetArn: !GetAtt InfraPermissionSet.PermissionSetArn
+      PrincipalId: !GetAtt InfraGroup.GroupId
+      PrincipalType: GROUP
+      TargetId: !Ref TargetAccountId
+      TargetType: AWS_ACCOUNT
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersGroupId:
+    Value: !GetAtt DevelopersGroup.GroupId
+
+  InfraGroupId:
+    Value: !GetAtt InfraGroup.GroupId
+
+  DevelopersPermissionSetArn:
+    Value: !GetAtt DevelopersPermissionSet.PermissionSetArn
+
+  InfraPermissionSetArn:
+    Value: !GetAtt InfraPermissionSet.PermissionSetArn

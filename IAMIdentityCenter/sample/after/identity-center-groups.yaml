@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [移行後] Identity Center グループ定義（サンプルシナリオ）
+
+  ../before/iam-groups.yaml の Developers / Infra グループにそれぞれ対応する。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  IdentityStoreId:
+    Type: String
+    Description: |
+      Identity Store ID
+      `aws sso-admin list-instances` で取得できる（例: d-9067123abc）
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  DevelopersGroup:
+    Type: AWS::IdentityStore::Group
+    Properties:
+      IdentityStoreId: !Ref IdentityStoreId
+      DisplayName: DeveloperTestGroup
+      Description: アプリケーション開発チーム（旧 IAM グループ Developers を移行）
+
+  InfraGroup:
+    Type: AWS::IdentityStore::Group
+    Properties:
+      IdentityStoreId: !Ref IdentityStoreId
+      DisplayName: InfraTestGroup
+      Description: インフラ運用チーム（旧 IAM グループ Infra を移行）
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersGroupId:
+    Description: Developers グループの Group ID（Assignment テンプレートで使用）
+    Value: !GetAtt DevelopersGroup.GroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-DevelopersGroupId"
+
+  InfraGroupId:
+    Description: Infra グループの Group ID（Assignment テンプレートで使用）
+    Value: !GetAtt InfraGroup.GroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-InfraGroupId"

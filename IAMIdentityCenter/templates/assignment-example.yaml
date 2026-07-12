@@ -1,0 +1,68 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  IAM Identity Center Account Assignment 定義テンプレート
+
+  「どのグループが・どの Permission Set を持つか」を、唯一の管理対象アカウント（TargetAccountId）
+  に対して割り当てる。管理アカウントが 1 つのみのため、この Assignment は実質
+  「Group × Permission Set」の対応表を明示的な CFN リソースとして残す役割になる。
+  group-example.yaml / permission-set-example.yaml で作成した
+  Group ID / Permission Set ARN を Parameters として渡して使う想定
+  （別スタックの Outputs を Fn::ImportValue で参照してもよい）。
+  詳細は ../02-CloudFormation管理方針.md を参照。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  SsoInstanceArn:
+    Type: String
+    Description: IAM Identity Center インスタンスの ARN
+
+  DevelopersGroupId:
+    Type: String
+    Description: group-example.yaml の Outputs.DevelopersGroupId
+
+  DevelopersPermissionSetArn:
+    Type: String
+    Description: permission-set-example.yaml の Outputs.DevelopersPermissionSetArn
+
+  InfraAdminsGroupId:
+    Type: String
+    Description: group-example.yaml の Outputs.InfraAdminsGroupId
+
+  InfraAdminsPermissionSetArn:
+    Type: String
+    Description: permission-set-example.yaml の Outputs.InfraAdminsPermissionSetArn
+
+  TargetAccountId:
+    Type: String
+    Description: |
+      権限を割り当てる対象の AWS アカウント ID
+      今回は管理するアカウントが 1 つのみのため、このスタック内では常に同じ値を指定する
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # 開発者グループに DevelopersAccess Permission Set を対象アカウントへ割り当て
+  DevelopersAssignment:
+    Type: AWS::SSO::Assignment
+    Properties:
+      InstanceArn: !Ref SsoInstanceArn
+      PermissionSetArn: !Ref DevelopersPermissionSetArn
+      PrincipalId: !Ref DevelopersGroupId
+      PrincipalType: GROUP
+      TargetId: !Ref TargetAccountId
+      TargetType: AWS_ACCOUNT
+
+  # インフラ管理者グループに InfraAdminsAccess Permission Set を対象アカウントへ割り当て
+  InfraAdminsAssignment:
+    Type: AWS::SSO::Assignment
+    Properties:
+      InstanceArn: !Ref SsoInstanceArn
+      PermissionSetArn: !Ref InfraAdminsPermissionSetArn
+      PrincipalId: !Ref InfraAdminsGroupId
+      PrincipalType: GROUP
+      TargetId: !Ref TargetAccountId
+      TargetType: AWS_ACCOUNT

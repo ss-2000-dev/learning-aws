@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  IAM Identity Center グループ定義テンプレート
+
+  既存の IAM グループを Identity Center 側のグループに置き換えるためのサンプル。
+  ユーザーの所属（グループメンバーシップ）はここでは管理しない
+  （入退社・異動の都度 PR を挟むのは運用上重くなるため）。
+  詳細は ../02-CloudFormation管理方針.md を参照。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  IdentityStoreId:
+    Type: String
+    Description: |
+      Identity Store ID
+      `aws sso-admin list-instances` で取得できる (例: d-xxxxxxxxxx)
+
+  Environment:
+    Type: String
+    Description: 環境名（タグ付け用）
+    AllowedValues:
+      - production
+      - staging
+      - development
+    Default: production
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # 開発者グループ（旧 IAM グループ "Developers" を踏襲）
+  DevelopersGroup:
+    Type: AWS::IdentityStore::Group
+    Properties:
+      IdentityStoreId: !Ref IdentityStoreId
+      DisplayName: Developers
+      Description: アプリケーション開発チーム（旧 IAM グループ Developers を移行）
+
+  # インフラ管理者グループ（旧 IAM グループ "InfraAdmins" を踏襲）
+  InfraAdminsGroup:
+    Type: AWS::IdentityStore::Group
+    Properties:
+      IdentityStoreId: !Ref IdentityStoreId
+      DisplayName: InfraAdmins
+      Description: インフラ運用チーム（旧 IAM グループ InfraAdmins を移行）
+
+  # 閲覧専用グループ（旧 IAM グループ "ReadOnly" を踏襲）
+  ReadOnlyGroup:
+    Type: AWS::IdentityStore::Group
+    Properties:
+      IdentityStoreId: !Ref IdentityStoreId
+      DisplayName: ReadOnly
+      Description: 参照専用ユーザー（旧 IAM グループ ReadOnly を移行）
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersGroupId:
+    Description: Developers グループの Group ID（Assignment テンプレートで使用）
+    Value: !GetAtt DevelopersGroup.GroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-DevelopersGroupId"
+
+  InfraAdminsGroupId:
+    Description: InfraAdmins グループの Group ID（Assignment テンプレートで使用）
+    Value: !GetAtt InfraAdminsGroup.GroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-InfraAdminsGroupId"
+
+  ReadOnlyGroupId:
+    Description: ReadOnly グループの Group ID（Assignment テンプレートで使用）
+    Value: !GetAtt ReadOnlyGroup.GroupId
+    Export:
+      Name: !Sub "${AWS::StackName}-ReadOnlyGroupId"

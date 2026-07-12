@@ -1,0 +1,40 @@
+Cfnドキュメント
+- https://docs.aws.amazon.com/ja_jp/AWSCloudFormation/latest/TemplateReference/aws-resource-identitystore-group.html
+- https://docs.aws.amazon.com/ja_jp/AWSCloudFormation/latest/TemplateReference/aws-resource-sso-permissionset.html#cfn-sso-permissionset-sessionduration
+- https://docs.aws.amazon.com/ja_jp/AWSCloudFormation/latest/TemplateReference/aws-resource-sso-assignment.html
+- https://docs.aws.amazon.com/ja_jp/singlesignon/latest/userguide/how-to-register-device.html
+
+設定 -> アイデンティティソース から「Identity Store ID」が得られる
+
+
+--------------------------------------------------------
+
+IAMIdentityCenter のフォルダに追加していってほしいです。
+
+IAM から IAM Identity Center にユーザー管理を移行したいです。
+現在IAMユーザーはExcelの管理台帳として管理しています。
+グループ、グループにアタッチするIAMポリシーについてはCloudFormationで管理しています。
+
+IAM から IAM Identity Centerに移行するにあたって、CloudFormationで管理したほうがよいものと管理しないほうがよいものがまだ曖昧です。
+IAM Identity CenterはAWSの独自のIDグループを利用するのみです。
+
+IAM Identity Center への置き換え手順を教えて下さい。
+
+あとは管理するAWSアカウントは1アカウントのみです。
+
+あとIAMIdentityCenterで管理するユーザーのセッション時間を15分に短縮したいです。
+設定でセッション期間の設定ができそうなのですが、
+ユーザーインタラクティブセッション、ユーザーバックグラウンドセッション、Kiroセッションという３つがあります。
+この違いを教えるとともに、一般的にセッションを短縮するにはどの設定を変更すればよいのでしょうか？
+
+実際に以下の簡単なシナリオで運用していた場合の移行手順をドキュメントにしてください。
+しかし、CloudFormationテンプレートは具体的な例がいいです。
+ドキュメントはIAMIdentityCenter/sampleフォルダ配下がいいです。
+- IAMグループは開発者グループとインフラグループ、開発者グループにはマネージドポリシーを利用していた
+- IAMグループ、グループにアタッチするIAMポリシーについてはCloudFormationで管理していた
+- IAM から IAMIdentityCenter へ移行したい
+
+既存のテンプレートは残したままでいいんだけどさ、sample/after配下のファイルってひとつのテンプレートファイルにまとめることって可能なの？
+もしまとめることが可能ならひとつのファイルにまとめたいので、そのファイルをsample/after配下に出力してほしいです。
+あとさ、カスタムポリシーとしてさ、どのIAM Identity CenterのユーザーでもMFA設定を自分でできるようなPermissionSetsというかIAM Policy を用意してほしいです。
+sample/after配下のファイルをさテストってわかるようにリソース名称を一部変えたので、それに習って出力するテンプレートもテストであることがわかるようにしてほしいな。

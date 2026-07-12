@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [移行後] Permission Set 定義（サンプルシナリオ）
+
+  ../before/iam-groups.yaml で定義していた権限を、そのまま Permission Set に移植する。
+  - Developers: AWS 管理ポリシー PowerUserAccess をそのまま ManagedPolicies に指定するだけで済む
+  - Infra: カスタムのインラインポリシーは、IAM::Policy の PolicyDocument をそのまま
+    InlinePolicy にコピーすれば移植できる（ポリシー内容自体を書き換える必要はない）
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  SsoInstanceArn:
+    Type: String
+    Description: |
+      IAM Identity Center インスタンスの ARN
+      `aws sso-admin list-instances` で取得できる（例: arn:aws:sso:::instance/ssoins-8a2b7c6d5e4f3210）
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ----------------------------------------------------------------------------
+  # 開発者向け Permission Set
+  # 旧: DevelopersGroup に ManagedPolicyArns として PowerUserAccess を直接アタッチ
+  # 新: Permission Set の ManagedPolicies にそのまま同じ ARN を指定するだけ
+  # ----------------------------------------------------------------------------
+  DevelopersPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: DevelopersAccessTestPermissionSet
+      Description: 開発者向け権限（旧 IAM グループ Developers / PowerUserAccess を移行）
+      InstanceArn: !Ref SsoInstanceArn
+      SessionDuration: PT8H
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+
+  # ----------------------------------------------------------------------------
+  # インフラ運用チーム向け Permission Set
+  # 旧: AWS::IAM::Policy（InfraGroupCustomPolicy）として InfraGroup にアタッチ
+  # 新: 同じ PolicyDocument の中身をそのまま InlinePolicy にコピーする
+  # ----------------------------------------------------------------------------
+  InfraPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: InfraAccessTestPermissionSet
+      Description: インフラ運用チーム向け権限（旧 IAM グループ Infra のカスタムポリシーを移行）
+      InstanceArn: !Ref SsoInstanceArn
+      SessionDuration: PT8H
+      InlinePolicy: >
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "InfraResourceAccess",
+              "Effect": "Allow",
+              "Action": [
+                "ec2:*",
+                "elasticloadbalancing:*",
+                "autoscaling:*",
+                "cloudformation:*",
+                "rds:Describe*",
+                "rds:List*"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "DenyIamAndOrganizations",
+              "Effect": "Deny",
+              "Action": [
+                "iam:*",
+                "organizations:*"
+              ],
+              "Resource": "*"
+            }
+          ]
+        }
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersPermissionSetArn:
+    Description: Developers Permission Set の ARN（Assignment テンプレートで使用）
+    Value: !GetAtt DevelopersPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub "${AWS::StackName}-DevelopersPermissionSetArn"
+
+  InfraPermissionSetArn:
+    Description: Infra Permission Set の ARN（Assignment テンプレートで使用）
+    Value: !GetAtt InfraPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub "${AWS::StackName}-InfraPermissionSetArn"

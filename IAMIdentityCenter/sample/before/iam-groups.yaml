@@ -1,0 +1,69 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [移行前] 現状の IAM グループ定義テンプレート（サンプルシナリオ）
+
+  - Developers（開発者グループ）: AWS 管理ポリシー PowerUserAccess をアタッチ
+  - Infra（インフラグループ）: カスタムのインラインポリシーをアタッチ
+    （EC2 / ELB / ASG / CloudFormation の操作は許可、IAM / Organizations の操作は明示的に拒否）
+
+  この状態から IAM Identity Center への移行を行う。移行後の対応物は
+  ../after/identity-center-groups.yaml / identity-center-permission-sets.yaml を参照。
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ----------------------------------------------------------------------------
+  # 開発者グループ（AWS 管理ポリシーを利用）
+  # ----------------------------------------------------------------------------
+  DevelopersGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: DevelopersTestGroup
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+
+  # ----------------------------------------------------------------------------
+  # インフラグループ（カスタムのインラインポリシーを利用）
+  # ----------------------------------------------------------------------------
+  InfraGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: InfraTestGroup
+
+  InfraGroupPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: InfraGroupTestCustomPolicy
+      Groups:
+        - !Ref InfraGroup
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: InfraResourceAccess
+            Effect: Allow
+            Action:
+              - ec2:*
+              - elasticloadbalancing:*
+              - autoscaling:*
+              - cloudformation:*
+              - rds:Describe*
+              - rds:List*
+            Resource: "*"
+          - Sid: DenyIamAndOrganizations
+            Effect: Deny
+            Action:
+              - iam:*
+              - organizations:*
+            Resource: "*"
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersGroupName:
+    Value: !Ref DevelopersGroup
+
+  InfraGroupName:
+    Value: !Ref InfraGroup

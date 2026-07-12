@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  IAM Identity Center Permission Set 定義テンプレート
+
+  既存の「IAM グループにアタッチしていた IAM ポリシー」を Permission Set に置き換えるサンプル。
+  Permission Set は「権限のテンプレート」であり、Assignment テンプレート側で
+  グループ・対象アカウントに割り当てて初めて有効になる。
+  詳細は ../02-CloudFormation管理方針.md を参照。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  SsoInstanceArn:
+    Type: String
+    Description: |
+      IAM Identity Center インスタンスの ARN
+      `aws sso-admin list-instances` で取得できる
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # 開発者向け Permission Set（旧 IAM グループ Developers にアタッチしていたポリシーを移植）
+  DevelopersPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: DevelopersAccess
+      Description: 開発者向け権限（旧 IAM グループ Developers を移行）
+      InstanceArn: !Ref SsoInstanceArn
+      # セッションの有効期間（ISO 8601 duration 形式）
+      SessionDuration: PT8H
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      # カスタム IAM ポリシーを移植する場合はこちらに書き換える
+      # CustomerManagedPolicyReferences:
+      #   - Name: DevelopersCustomPolicy
+      #     Path: "/"
+
+  # インフラ管理者向け Permission Set（旧 IAM グループ InfraAdmins を移植）
+  InfraAdminsPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: InfraAdminsAccess
+      Description: インフラ運用チーム向け権限（旧 IAM グループ InfraAdmins を移行）
+      InstanceArn: !Ref SsoInstanceArn
+      SessionDuration: PT8H
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+
+  # 閲覧専用 Permission Set（旧 IAM グループ ReadOnly を移植）
+  ReadOnlyPermissionSet:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ReadOnlyAccess
+      Description: 参照専用権限（旧 IAM グループ ReadOnly を移行）
+      InstanceArn: !Ref SsoInstanceArn
+      SessionDuration: PT4H
+      ManagedPolicies:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersPermissionSetArn:
+    Description: Developers Permission Set の ARN（Assignment テンプレートで使用）
+    Value: !GetAtt DevelopersPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub "${AWS::StackName}-DevelopersPermissionSetArn"
+
+  InfraAdminsPermissionSetArn:
+    Description: InfraAdmins Permission Set の ARN（Assignment テンプレートで使用）
+    Value: !GetAtt InfraAdminsPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub "${AWS::StackName}-InfraAdminsPermissionSetArn"
+
+  ReadOnlyPermissionSetArn:
+    Description: ReadOnly Permission Set の ARN（Assignment テンプレートで使用）
+    Value: !GetAtt ReadOnlyPermissionSet.PermissionSetArn
+    Export:
+      Name: !Sub "${AWS::StackName}-ReadOnlyPermissionSetArn"

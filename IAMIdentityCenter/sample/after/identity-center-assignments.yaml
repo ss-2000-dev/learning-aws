@@ -1,0 +1,64 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [移行後] Account Assignment 定義（サンプルシナリオ）
+
+  Developers / Infra の各グループに、対応する Permission Set を
+  唯一の管理対象アカウント（TargetAccountId）へ割り当てる。
+  Group ID / Permission Set ARN は
+  identity-center-groups.yaml / identity-center-permission-sets.yaml の
+  Outputs をそのまま Parameters として渡す想定。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  SsoInstanceArn:
+    Type: String
+    Description: IAM Identity Center インスタンスの ARN
+
+  DevelopersGroupId:
+    Type: String
+    Description: identity-center-groups.yaml の Outputs.DevelopersGroupId
+
+  DevelopersPermissionSetArn:
+    Type: String
+    Description: identity-center-permission-sets.yaml の Outputs.DevelopersPermissionSetArn
+
+  InfraGroupId:
+    Type: String
+    Description: identity-center-groups.yaml の Outputs.InfraGroupId
+
+  InfraPermissionSetArn:
+    Type: String
+    Description: identity-center-permission-sets.yaml の Outputs.InfraPermissionSetArn
+
+  TargetAccountId:
+    Type: String
+    Description: |
+      権限を割り当てる対象の AWS アカウント ID
+      管理するアカウントは 1 つのみのため、常に同じ値を指定する（例: 111122223333）
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  DevelopersAssignment:
+    Type: AWS::SSO::Assignment
+    Properties:
+      InstanceArn: !Ref SsoInstanceArn
+      PermissionSetArn: !Ref DevelopersPermissionSetArn
+      PrincipalId: !Ref DevelopersGroupId
+      PrincipalType: GROUP
+      TargetId: !Ref TargetAccountId
+      TargetType: AWS_ACCOUNT
+
+  InfraAssignment:
+    Type: AWS::SSO::Assignment
+    Properties:
+      InstanceArn: !Ref SsoInstanceArn
+      PermissionSetArn: !Ref InfraPermissionSetArn
+      PrincipalId: !Ref InfraGroupId
+      PrincipalType: GROUP
+      TargetId: !Ref TargetAccountId
+      TargetType: AWS_ACCOUNT
