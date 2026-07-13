@@ -7,8 +7,10 @@ Description: |
   ../../IAMIdentityCenter/sample/before/iam-groups.yaml の
   DevelopersTestGroup / InfraTestGroup が持っていた権限をそのまま踏襲している。
 
-  このテンプレートは Development / Staging / Production の各アカウントに
+  このテンプレートは Development / Production の各アカウントに
   それぞれ一度ずつデプロイする想定（Parameters の値だけ環境ごとに変える）。
+  検証（Staging）環境はベースアカウント自身が兼ねるため、
+  このテンプレートのデプロイ対象外（../staging-account-assume-role-policies.yaml 側で対応）。
   商用（Production）アカウントにデプロイする際は、
   TrustedPrincipalArns に許可したい特定ユーザーの ARN のみを指定し、
   RequireMfa を true にすることを強く推奨する。
@@ -23,14 +25,13 @@ Parameters:
     Description: 環境名（ロール名の prefix に使用）
     AllowedValues:
       - Development
-      - Staging
       - Production
 
   TrustedPrincipalArns:
     Type: CommaDelimitedList
     Description: |
       このロールへの AssumeRole を許可する Principal（IAM ユーザー／ロールの ARN）のカンマ区切りリスト。
-      開発・検証環境: ベースアカウントの root を指定して、アカウント全体を信頼してよい
+      開発環境: ベースアカウント（検証環境を兼ねる）の root を指定して、アカウント全体を信頼してよい
         （例: arn:aws:iam::111122223333:root）
       商用環境: 個別の IAM ユーザー ARN のみを列挙する（アカウント全体を信頼しない）
         （例: arn:aws:iam::111122223333:user/taro.yamada,arn:aws:iam::111122223333:user/hanako.suzuki）
@@ -48,7 +49,7 @@ Parameters:
     Description: |
       セッション時間（秒）。1時間（3600）〜12時間（43200）の範囲でのみ指定可能
       （AWS のハード制約。1時間未満には設定できない。詳細は ../02-セッション時間.md 参照）
-      開発・検証環境の目安: 28800（8時間）
+      開発環境の目安: 28800（8時間）
       商用環境の目安: 3600（1時間・プラットフォームの下限）
     Default: 28800
     MinValue: 3600

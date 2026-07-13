@@ -1,0 +1,257 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [統合版] スイッチロール関連リソースを1つのテンプレートにまとめたサンプル。
+
+  DeploymentTarget パラメータの値によって、Condition で作成するリソースを切り替える。
+  - DeploymentTarget=Staging: ベースアカウント（検証環境を兼ねる）にデプロイする。
+    既存の DevelopersTestGroup / InfraTestGroup に AssumeRole 許可ポリシーを追加アタッチし、
+    ProdOperators グループを新設する（../staging-account-assume-role-policies.yaml 相当）。
+  - DeploymentTarget=Development または Production: 各環境アカウントにデプロイする。
+    DevelopersRole / InfraRole を作成する（../target-account-roles.yaml 相当）。
+
+  このテンプレート1つを、ベースアカウント・開発アカウント・商用アカウントの
+  3つのアカウントにそれぞれ1回ずつ、DeploymentTarget の値だけ変えてデプロイする想定。
+
+  既存の target-account-roles.yaml / staging-account-assume-role-policies.yaml は
+  分割管理したい場合のために残してあり、本ファイルは「1ファイルにまとめる場合の例」として追加したもの。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  DeploymentTarget:
+    Type: String
+    Description: このスタックをどの役割のアカウントへデプロイするか
+    AllowedValues:
+      - Staging
+      - Development
+      - Production
+
+  # ---- DeploymentTarget=Staging のときのみ使用 ----
+  ExistingDevelopersGroupName:
+    Type: String
+    Description: "[Staging専用] 既存の開発者グループ名（他の DeploymentTarget では未使用）"
+    Default: DevelopersTestGroup
+
+  ExistingInfraGroupName:
+    Type: String
+    Description: "[Staging専用] 既存のインフラグループ名（他の DeploymentTarget では未使用）"
+    Default: InfraTestGroup
+
+  DevDevelopersRoleArn:
+    Type: String
+    Description: "[Staging専用] 開発アカウントの DevelopersRole ARN（他の DeploymentTarget では未使用）"
+    Default: ""
+
+  DevInfraRoleArn:
+    Type: String
+    Description: "[Staging専用] 開発アカウントの InfraRole ARN（他の DeploymentTarget では未使用）"
+    Default: ""
+
+  ProdDevelopersRoleArn:
+    Type: String
+    Description: "[Staging専用] 商用アカウントの DevelopersRole ARN（他の DeploymentTarget では未使用）"
+    Default: ""
+
+  ProdInfraRoleArn:
+    Type: String
+    Description: "[Staging専用] 商用アカウントの InfraRole ARN（他の DeploymentTarget では未使用）"
+    Default: ""
+
+  # ---- DeploymentTarget=Development / Production のときのみ使用 ----
+  TrustedPrincipalArns:
+    Type: CommaDelimitedList
+    Description: |
+      [Development/Production専用] AssumeRole を許可する Principal（IAM ユーザー／ロールの ARN）のカンマ区切りリスト
+      （Staging では未使用）
+      開発環境: ベースアカウントの root を指定してよい（例: arn:aws:iam::111122223333:root）
+      商用環境: 個別の IAM ユーザー ARN のみを列挙する
+        （例: arn:aws:iam::111122223333:user/taro.yamada,arn:aws:iam::111122223333:user/hanako.suzuki）
+    Default: ""
+
+  RequireMfa:
+    Type: String
+    Description: "[Development/Production専用] AssumeRole 時に MFA 認証済みであることを必須にするか（Staging では未使用）"
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  MaxSessionDuration:
+    Type: Number
+    Description: |
+      [Development/Production専用] セッション時間（秒）。1時間（3600）〜12時間（43200）の範囲でのみ指定可能
+      （AWS のハード制約。1時間未満には設定できない。Staging では未使用）
+      開発環境の目安: 28800（8時間）
+      商用環境の目安: 3600（1時間・プラットフォームの下限）
+    Default: 28800
+    MinValue: 3600
+    MaxValue: 43200
+
+# ==============================================================================
+# Conditions
+# ==============================================================================
+Conditions:
+  IsStaging: !Equals [!Ref DeploymentTarget, "Staging"]
+  IsTargetEnvironment: !Not [!Equals [!Ref DeploymentTarget, "Staging"]]
+  IsMfaRequired: !Equals [!Ref RequireMfa, "true"]
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ============================================================================
+  # Development / Production 用リソース（DeploymentTarget が Staging 以外のときだけ作成）
+  # ============================================================================
+
+  DevelopersRole:
+    Type: AWS::IAM::Role
+    Condition: IsTargetEnvironment
+    Properties:
+      RoleName: !Sub "${DeploymentTarget}DevelopersRole"
+      Description: !Sub "開発者向けスイッチロール先ロール（${DeploymentTarget} 環境）"
+      MaxSessionDuration: !Ref MaxSessionDuration
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedPrincipalArns
+            Action: sts:AssumeRole
+            Condition: !If
+              - IsMfaRequired
+              - Bool:
+                  aws:MultiFactorAuthPresent: "true"
+              - !Ref "AWS::NoValue"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+
+  InfraRole:
+    Type: AWS::IAM::Role
+    Condition: IsTargetEnvironment
+    Properties:
+      RoleName: !Sub "${DeploymentTarget}InfraRole"
+      Description: !Sub "インフラ運用チーム向けスイッチロール先ロール（${DeploymentTarget} 環境）"
+      MaxSessionDuration: !Ref MaxSessionDuration
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedPrincipalArns
+            Action: sts:AssumeRole
+            Condition: !If
+              - IsMfaRequired
+              - Bool:
+                  aws:MultiFactorAuthPresent: "true"
+              - !Ref "AWS::NoValue"
+      Policies:
+        - PolicyName: InfraResourcePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InfraResourceAccess
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - cloudformation:*
+                  - rds:Describe*
+                  - rds:List*
+                Resource: "*"
+              - Sid: DenyIamAndOrganizations
+                Effect: Deny
+                Action:
+                  - iam:*
+                  - organizations:*
+                Resource: "*"
+
+  # ============================================================================
+  # Staging（ベースアカウント）用リソース（DeploymentTarget=Staging のときだけ作成）
+  # ============================================================================
+
+  AssumeDevDevelopersRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsStaging
+    Properties:
+      ManagedPolicyName: AssumeDevDevelopersRolePolicy
+      Description: 開発アカウントの DevelopersRole への AssumeRole を許可（既存の開発者グループに追加アタッチ）
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeDevDevelopersRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Ref DevDevelopersRoleArn
+      Groups:
+        - !Ref ExistingDevelopersGroupName
+
+  AssumeDevInfraRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsStaging
+    Properties:
+      ManagedPolicyName: AssumeDevInfraRolePolicy
+      Description: 開発アカウントの InfraRole への AssumeRole を許可（既存のインフラグループに追加アタッチ）
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeDevInfraRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Ref DevInfraRoleArn
+      Groups:
+        - !Ref ExistingInfraGroupName
+
+  ProdOperatorsGroup:
+    Type: AWS::IAM::Group
+    Condition: IsStaging
+    Properties:
+      GroupName: ProdOperators
+
+  AssumeProdDevelopersRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsStaging
+    Properties:
+      ManagedPolicyName: AssumeProdDevelopersRolePolicy
+      Description: 商用環境の DevelopersRole への AssumeRole を許可（ProdOperators グループ専用）
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeProdDevelopersRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Ref ProdDevelopersRoleArn
+      Groups:
+        - !Ref ProdOperatorsGroup
+
+  AssumeProdInfraRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Condition: IsStaging
+    Properties:
+      ManagedPolicyName: AssumeProdInfraRolePolicy
+      Description: 商用環境の InfraRole への AssumeRole を許可（ProdOperators グループ専用）
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeProdInfraRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Ref ProdInfraRoleArn
+      Groups:
+        - !Ref ProdOperatorsGroup
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersRoleArn:
+    Condition: IsTargetEnvironment
+    Description: このアカウントの Developers ロール ARN（Staging デプロイ時の Parameters に渡す）
+    Value: !GetAtt DevelopersRole.Arn
+
+  InfraRoleArn:
+    Condition: IsTargetEnvironment
+    Description: このアカウントの Infra ロール ARN（Staging デプロイ時の Parameters に渡す）
+    Value: !GetAtt InfraRole.Arn
