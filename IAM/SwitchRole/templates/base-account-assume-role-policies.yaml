@@ -1,0 +1,143 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [ベースアカウント側] スイッチロール権限（AssumeRole 許可ポリシー）定義テンプレート
+
+  旧: DevelopersTestGroup / InfraTestGroup に「実際の権限（PowerUserAccess 等）」を
+      直接アタッチしていた（../../IAMIdentityCenter/sample/before/iam-groups.yaml）
+  新: グループには「各環境アカウントのロールへ AssumeRole できる権限」だけをアタッチする。
+      実際の権限（PowerUserAccess 等）は各環境アカウント側のロールが持つ
+      （../templates/target-account-roles.yaml）。
+
+  Developers / Infra グループは開発・検証環境のみ AssumeRole 可能。
+  商用環境は別建ての ProdOperators グループ（少数精鋭）のみが AssumeRole 可能。
+  詳細は ../04-環境別アクセス制御.md を参照。
+
+  グループへの「誰を所属させるか」（ユーザー ↔ グループの割り当て）は
+  このテンプレートの管理対象外（頻繁に変わる人事異動由来の情報のため）。
+  IAM Identity Center 移行検討時の CloudFormation 管理方針
+  （../../IAMIdentityCenter/02-CloudFormation管理方針.md）と同じ考え方を踏襲している。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  DevDevelopersRoleArn:
+    Type: String
+    Description: 開発環境アカウントの DevelopersRole ARN（target-account-roles.yaml の Outputs から取得）
+
+  DevInfraRoleArn:
+    Type: String
+    Description: 開発環境アカウントの InfraRole ARN（target-account-roles.yaml の Outputs から取得）
+
+  StagingDevelopersRoleArn:
+    Type: String
+    Description: 検証環境アカウントの DevelopersRole ARN（target-account-roles.yaml の Outputs から取得）
+
+  StagingInfraRoleArn:
+    Type: String
+    Description: 検証環境アカウントの InfraRole ARN（target-account-roles.yaml の Outputs から取得）
+
+  ProdDevelopersRoleArn:
+    Type: String
+    Description: 商用環境アカウントの DevelopersRole ARN（target-account-roles.yaml の Outputs から取得）
+
+  ProdInfraRoleArn:
+    Type: String
+    Description: 商用環境アカウントの InfraRole ARN（target-account-roles.yaml の Outputs から取得）
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ----------------------------------------------------------------------------
+  # AssumeRole 許可ポリシー（開発・検証環境）
+  # ----------------------------------------------------------------------------
+  AssumeDevAndStagingDevelopersRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: AssumeDevAndStagingDevelopersRolePolicy
+      Description: 開発・検証環境の DevelopersRole への AssumeRole を許可
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeDevAndStagingDevelopersRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource:
+              - !Ref DevDevelopersRoleArn
+              - !Ref StagingDevelopersRoleArn
+
+  AssumeDevAndStagingInfraRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: AssumeDevAndStagingInfraRolePolicy
+      Description: 開発・検証環境の InfraRole への AssumeRole を許可
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeDevAndStagingInfraRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource:
+              - !Ref DevInfraRoleArn
+              - !Ref StagingInfraRoleArn
+
+  # ----------------------------------------------------------------------------
+  # AssumeRole 許可ポリシー（商用環境。ProdOperators グループにのみアタッチする）
+  # ----------------------------------------------------------------------------
+  AssumeProdDevelopersRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: AssumeProdDevelopersRolePolicy
+      Description: 商用環境の DevelopersRole への AssumeRole を許可（ProdOperators グループ専用）
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeProdDevelopersRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Ref ProdDevelopersRoleArn
+
+  AssumeProdInfraRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: AssumeProdInfraRolePolicy
+      Description: 商用環境の InfraRole への AssumeRole を許可（ProdOperators グループ専用）
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AssumeProdInfraRole
+            Effect: Allow
+            Action: sts:AssumeRole
+            Resource: !Ref ProdInfraRoleArn
+
+  # ----------------------------------------------------------------------------
+  # グループ
+  # ----------------------------------------------------------------------------
+
+  # 開発者グループ: 開発・検証環境のみ AssumeRole 可能（商用は不可）
+  DevelopersGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: Developers
+      ManagedPolicyArns:
+        - !Ref AssumeDevAndStagingDevelopersRolePolicy
+
+  # インフラグループ: 開発・検証環境のみ AssumeRole 可能（商用は不可）
+  InfraGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: Infra
+      ManagedPolicyArns:
+        - !Ref AssumeDevAndStagingInfraRolePolicy
+
+  # 商用環境オペレーターグループ: 商用環境への AssumeRole を許可する少数精鋭グループ
+  # メンバーの追加・削除はこのテンプレートの管理対象外（手動 or 別スクリプトで運用）
+  ProdOperatorsGroup:
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: ProdOperators
+      ManagedPolicyArns:
+        - !Ref AssumeProdDevelopersRolePolicy
+        - !Ref AssumeProdInfraRolePolicy

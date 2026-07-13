@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  [各環境アカウント側] スイッチロール先の IAM ロール定義テンプレート
+
+  Developers ロール（AWS 管理ポリシー PowerUserAccess）と
+  Infra ロール（カスタムのインラインポリシー）を作成する。
+  ../../IAMIdentityCenter/sample/before/iam-groups.yaml の
+  DevelopersTestGroup / InfraTestGroup が持っていた権限をそのまま踏襲している。
+
+  このテンプレートは Development / Staging / Production の各アカウントに
+  それぞれ一度ずつデプロイする想定（Parameters の値だけ環境ごとに変える）。
+  商用（Production）アカウントにデプロイする際は、
+  TrustedPrincipalArns に許可したい特定ユーザーの ARN のみを指定し、
+  RequireMfa を true にすることを強く推奨する。
+  詳細は ../04-環境別アクセス制御.md を参照。
+
+# ==============================================================================
+# Parameters
+# ==============================================================================
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: 環境名（ロール名の prefix に使用）
+    AllowedValues:
+      - Development
+      - Staging
+      - Production
+
+  TrustedPrincipalArns:
+    Type: CommaDelimitedList
+    Description: |
+      このロールへの AssumeRole を許可する Principal（IAM ユーザー／ロールの ARN）のカンマ区切りリスト。
+      開発・検証環境: ベースアカウントの root を指定して、アカウント全体を信頼してよい
+        （例: arn:aws:iam::111122223333:root）
+      商用環境: 個別の IAM ユーザー ARN のみを列挙する（アカウント全体を信頼しない）
+        （例: arn:aws:iam::111122223333:user/taro.yamada,arn:aws:iam::111122223333:user/hanako.suzuki）
+
+  RequireMfa:
+    Type: String
+    Description: AssumeRole 時に MFA 認証済みであることを必須にするか
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  MaxSessionDuration:
+    Type: Number
+    Description: |
+      セッション時間（秒）。1時間（3600）〜12時間（43200）の範囲でのみ指定可能
+      （AWS のハード制約。1時間未満には設定できない。詳細は ../02-セッション時間.md 参照）
+      開発・検証環境の目安: 28800（8時間）
+      商用環境の目安: 3600（1時間・プラットフォームの下限）
+    Default: 28800
+    MinValue: 3600
+    MaxValue: 43200
+
+# ==============================================================================
+# Conditions
+# ==============================================================================
+Conditions:
+  IsMfaRequired: !Equals [!Ref RequireMfa, "true"]
+
+# ==============================================================================
+# Resources
+# ==============================================================================
+Resources:
+
+  # ----------------------------------------------------------------------------
+  # Developers ロール
+  # 旧: DevelopersTestGroup に ManagedPolicyArns として PowerUserAccess を直接アタッチ
+  # 新: ロールの ManagedPolicyArns にそのまま同じ ARN を指定するだけ
+  # ----------------------------------------------------------------------------
+  DevelopersRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvironmentName}DevelopersRole"
+      Description: !Sub "開発者向けスイッチロール先ロール（${EnvironmentName} 環境）"
+      MaxSessionDuration: !Ref MaxSessionDuration
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedPrincipalArns
+            Action: sts:AssumeRole
+            Condition: !If
+              - IsMfaRequired
+              - Bool:
+                  aws:MultiFactorAuthPresent: "true"
+              - !Ref "AWS::NoValue"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/PowerUserAccess
+
+  # ----------------------------------------------------------------------------
+  # Infra ロール
+  # 旧: AWS::IAM::Policy（InfraGroupTestCustomPolicy）として InfraTestGroup にアタッチ
+  # 新: 同じ PolicyDocument の中身をそのまま Role のインラインポリシーにコピーする
+  # ----------------------------------------------------------------------------
+  InfraRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${EnvironmentName}InfraRole"
+      Description: !Sub "インフラ運用チーム向けスイッチロール先ロール（${EnvironmentName} 環境）"
+      MaxSessionDuration: !Ref MaxSessionDuration
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedPrincipalArns
+            Action: sts:AssumeRole
+            Condition: !If
+              - IsMfaRequired
+              - Bool:
+                  aws:MultiFactorAuthPresent: "true"
+              - !Ref "AWS::NoValue"
+      Policies:
+        - PolicyName: InfraResourcePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InfraResourceAccess
+                Effect: Allow
+                Action:
+                  - ec2:*
+                  - elasticloadbalancing:*
+                  - autoscaling:*
+                  - cloudformation:*
+                  - rds:Describe*
+                  - rds:List*
+                Resource: "*"
+              - Sid: DenyIamAndOrganizations
+                Effect: Deny
+                Action:
+                  - iam:*
+                  - organizations:*
+                Resource: "*"
+
+# ==============================================================================
+# Outputs
+# ==============================================================================
+Outputs:
+  DevelopersRoleArn:
+    Description: このアカウントの Developers ロール ARN（ベースアカウント側テンプレートの Parameters に渡す）
+    Value: !GetAtt DevelopersRole.Arn
+
+  InfraRoleArn:
+    Description: このアカウントの Infra ロール ARN（ベースアカウント側テンプレートの Parameters に渡す）
+    Value: !GetAtt InfraRole.Arn
