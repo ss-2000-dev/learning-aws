@@ -1,5 +1,6 @@
 # AWS WAF Web Application Firewall
 
+- 挙動的に外部からのリクエスト -> CloudFront -> WAF評価 の経路なのか？
 - AWS が提供する Web Application Firewall
 - HTTP(S) リクエストをモニタリングできるウェブアプリケーションファイアウォール
 - Web アプリケーションに対する攻撃から対象のリソースを保護する
