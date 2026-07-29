@@ -153,6 +153,79 @@ RateLimitRule:
 
 ---
 
+## デフォルトアクションを変更すると IP 制限は解除されるか
+
+**「デフォルトアクションを Block → Allow に変更したら、IP 制限は解除されるか？」**という疑問は実装パターンによって答えが変わる。結論から言うと **IP 制限がどう実装されているかによる**（両方のケースがあり得る）。
+
+### 大前提：ルールとデフォルトアクションの関係
+
+AWS 公式ドキュメント（[Setting the protection pack (web ACL) default action](https://docs.aws.amazon.com/waf/latest/developerguide/web-acl-default-action.html)）の記載：
+
+> AWS WAF applies this [default] action to any web request that makes it through all of the web ACL's rule evaluations **without having a terminating action applied to it**.
+
+つまり：
+- **ルールにマッチして Block/Allow（terminating action）が適用されたリクエスト** → そのルールのアクションが確定し、デフォルトアクションは**無関係**
+- **どのルールにもマッチしなかったリクエスト** → デフォルトアクションが適用される
+
+「解除されるか」は、IP制限ルールがこのどちらの立ち位置にあるかで変わる。
+
+### パターン A：解除される（許可リスト＝ホワイトリスト方式）
+
+```yaml
+DefaultAction: Block          # 原則ブロック
+Rules:
+  - Name: AllowTrustedIPs
+    Statement:
+      IPSetReferenceStatement:  # 許可IPリスト
+    Action:
+      Allow: {}                 # 許可IPだけ Allow
+```
+
+- 許可IP以外のリクエストは、どのルールにもマッチせず**デフォルトアクション（Block）**で弾かれていた
+- `DefaultAction` を `Allow` に変更すると、**許可IP以外の全リクエストもデフォルトで通過**するようになる
+- → **IP 制限は実質的に解除される**（許可リストの意味がなくなる）
+
+### パターン B：解除されない（拒否リスト＝ブラックリスト方式）
+
+```yaml
+DefaultAction: Block           # 何らかの理由でデフォルトはブロック
+Rules:
+  - Name: BlockBadIPs
+    Statement:
+      IPSetReferenceStatement:  # 拒否したいIPリスト
+    Action:
+      Block: {}                  # 特定IPを明示的にBlock
+```
+
+- 拒否したいIPは、ルールで明示的に `Block`（terminating action）が適用される
+- `DefaultAction` を `Allow` に変えても、**そのルール自体は残っているので該当IPは引き続きブロックされる**
+- ただし、**このルール以外のどのルールにも該当しない他の一般リクエストは Block → Allow に変わる**（全体としての防御は弱まる）
+- → **IP 制限（拒否リスト部分）は解除されない**
+
+### まとめ表
+
+| IPルールの実装 | Action | DefaultAction 変更の影響 |
+|---|---|---|
+| 許可リスト（Allow rule + Block default） | `Allow` | **解除される**（許可IP以外も通ってしまう） |
+| 拒否リスト（Block rule + 何らかの default） | `Block` | **解除されない**（該当IPは引き続きブロック）が、他の未マッチ通信は緩くなる |
+
+### 変更前の確認手順（推奨）
+
+1. **現在の Web ACL のルール一覧とアクションを確認**
+   ```bash
+   aws wafv2 get-web-acl --name <name> --scope REGIONAL --id <id>
+   ```
+   Rules 内の各 `Action`（Allow/Block）と `IPSetReferenceStatement` の有無を確認する。
+
+2. **どちらのパターンか判断**
+   - IP制限ルールの Action が `Allow` → パターンA（解除される）
+   - IP制限ルールの Action が `Block` → パターンB（解除されない）
+
+3. **変更前に Count モードで試す**
+   本番影響が心配なら、一時的にルールを `Count` にしてサンプルリクエスト・CloudWatch メトリクスで挙動を確認してから本番反映する。
+
+---
+
 ## X-Forwarded-For ヘッダーへの対応
 
 ALB や CloudFront の背後に WAF がある場合、クライアントの実際の IP は `X-Forwarded-For` ヘッダーに入ることがある。
